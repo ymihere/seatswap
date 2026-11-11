@@ -182,8 +182,6 @@ pub(crate) fn tooltip(snapshot: &Snapshot, now: DateTime<Utc>) -> String {
     }
 }
 
-/// Build the tray icon. The menu event handler is wired here; clicks and menu
-/// entries call into `gui` for the actual window work.
 /// Create the tray icon from the current snapshot. Without a tray to show it
 /// in (on Linux: no StatusNotifierWatcher, because the desktop has no tray
 /// support or its panel starts after seatswap at login), seatswap keeps running
@@ -193,8 +191,7 @@ pub(crate) fn start(app: &AppHandle) {
     if let Err(error) = try_build(app) {
         let message = no_tray_message(&error);
         eprintln!("seatswap: {message}");
-        super::notify::send_error(&message);
-        build_when_a_tray_appears(app);
+        wait_for_a_tray(app, message);
     }
 }
 
@@ -219,20 +216,25 @@ fn try_build(app: &AppHandle) -> Result<(), String> {
 /// Watch the session bus for the StatusNotifierWatcher and create the icon when
 /// it appears. Once the icon exists, ksni registers it again by itself whenever
 /// the watcher restarts.
+///
+/// At login the desktop starts its tray and seatswap at the same moment
+/// (Cinnamon: `xapp-sn-watcher` and the autostart entry, same second), so the
+/// first try often comes too early. The notification is therefore shown only
+/// when no tray has appeared after [`TRAY_GRACE`].
 #[cfg(target_os = "linux")]
-fn build_when_a_tray_appears(app: &AppHandle) {
-    use gtk::gio;
+fn wait_for_a_tray(app: &AppHandle, message: String) {
+    use gtk::{gio, glib};
     use std::sync::{Arc, Mutex};
 
     // Holds the watch id (`gio::bus_watch_name` returns it after the closure exists).
     let watch = Arc::new(Mutex::new(None));
     let appeared_watch = Arc::clone(&watch);
-    let app = app.clone();
+    let appeared_app = app.clone();
     let id = gio::bus_watch_name(
         gio::BusType::Session,
         STATUS_NOTIFIER_WATCHER,
         gio::BusNameWatcherFlags::NONE,
-        move |_, _, _| match try_build(&app) {
+        move |_, _, _| match try_build(&appeared_app) {
             Ok(()) => {
                 eprintln!("seatswap: a system tray appeared; the icon is shown");
                 if let Some(id) = super::lock(&appeared_watch).take() {
@@ -244,15 +246,34 @@ fn build_when_a_tray_appears(app: &AppHandle) {
         |_, _| {},
     );
     *super::lock(&watch) = Some(id);
+
+    let app = app.clone();
+    glib::timeout_add_local_once(TRAY_GRACE, move || {
+        let shown = app
+            .try_state::<GuiState>()
+            .is_some_and(|state| super::lock(&state.tray).is_some());
+        if !shown {
+            super::notify::send_error(&message);
+        }
+    });
 }
 
-/// Elsewhere the tray is part of the system; there is nothing to wait for.
+/// Elsewhere the tray is part of the system; there is nothing to wait for, so
+/// the user is told at once.
 #[cfg(not(target_os = "linux"))]
-fn build_when_a_tray_appears(_app: &AppHandle) {}
+fn wait_for_a_tray(_app: &AppHandle, message: String) {
+    super::notify::send_error(&message);
+}
 
 /// The D-Bus name of the tray host registry on Linux (StatusNotifierItem spec).
 #[cfg(target_os = "linux")]
 const STATUS_NOTIFIER_WATCHER: &str = "org.kde.StatusNotifierWatcher";
+
+/// How long seatswap waits for a tray at startup before it notifies that there
+/// is none. At login on Linux Mint the tray came up within the same second as
+/// seatswap (2026-11-11); 30 s leaves room for a slow, busy login.
+#[cfg(target_os = "linux")]
+const TRAY_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
 
 fn build(app: &AppHandle, snapshot: &Snapshot) -> tauri::Result<TrayIcon> {
     let menu = build_menu(app, snapshot)?;

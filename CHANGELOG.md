@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- No more "no system tray" notification at login when the desktop's tray starts a moment after
+  seatswap (Linux Mint: same second). seatswap now waits 30 s for a tray before it notifies.
+
 ## [1.0.0] - 2026-11-11
 
 ### Added
