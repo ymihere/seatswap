@@ -17,7 +17,7 @@ path = "src/main.rs"
 
 [features]
 default = ["gui"]
-gui = ["dep:tauri", "dep:tauri-build", "dep:tiny-skia", "dep:ab_glyph", "dep:notify-rust", "dep:tray-icon", "dep:gtk", "dep:gdkx11"]
+gui = ["dep:tauri", "dep:tauri-build", "dep:tiny-skia", "dep:ab_glyph", "dep:notify-rust", "dep:tray-icon", "dep:gtk", "dep:gdkx11", "dep:winreg"]
 
 [dependencies]
 seatswap-core = { path = "../core" }
@@ -43,6 +43,16 @@ tray-icon = { version = "0.25", default-features = false, features = ["ksni"], o
 # the same versions Tauri already uses.
 gtk = { version = "0.18", optional = true }
 gdkx11 = { version = "0.18", optional = true }
+
+# Windows (docs/windows.md). Both were already in Cargo.lock: uds_windows
+# through notify-rust, winreg through Tauri's build tooling.
+[target.'cfg(windows)'.dependencies]
+# Unix sockets for the single-instance socket (gui/ipc.rs), until
+# std::os::windows::net is stable (rust-lang/rust#150487); then ipc.rs imports
+# from std and this crate goes.
+uds_windows = "1.2"
+# The autostart entry (Run key) and the notification name.
+winreg = { version = "0.56", optional = true }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [], optional = true }

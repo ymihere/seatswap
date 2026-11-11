@@ -3636,6 +3636,8 @@ dependencies = [
  "thiserror 2.0.21",
  "tiny-skia",
  "tray-icon",
+ "uds_windows",
+ "winreg",
 ]
 
 [[package]]
