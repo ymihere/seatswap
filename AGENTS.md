@@ -1,11 +1,11 @@
 # seatswap — notes for every worker
 
-A tray app + CLI that switches Claude Code between several Claude accounts by swapping only the login in Claude Code's files. Design: `docs/spec.md` (what and why), `docs/implementation.md` (module contracts and signatures). Read the sections your task names.
+A tray app + CLI for Linux and Windows that switches Claude Code between several Claude accounts by swapping only the login in Claude Code's files. Design: `docs/spec.md` (what and why), `docs/implementation.md` (module contracts and signatures), `docs/windows.md` (the Windows contracts and what was checked there). Read the sections your task names.
 
 ## Layout
 
 - `crates/core` — library `seatswap_core`. No GUI. Modules and their single job are listed at the top of `crates/core/src/lib.rs`.
-- `crates/app` — binary `seatswap`: CLI (clap) always; tray + pop-up (Tauri 2) behind the default feature `gui`.
+- `crates/app` — library `seatswap` with two programs that both call its `run()`: `seatswap`, and `seatswap-tray` (the same program without a console window on Windows). CLI (clap) always; tray + pop-up (Tauri 2) behind the default feature `gui`.
 - `phase0/` — Python test scripts from the research phase. Do not touch.
 - `docs/` — spec and implementation notes. Do not edit unless the task says so.
 
@@ -20,9 +20,9 @@ Always pass `--offline`: workers have no network, and every crate the project us
 
 ## Hard rules
 
-1. **Never touch the real Claude Code files.** No code, test or command may read or write `~/.claude`, `~/.claude.json`, `~/.config/seatswap` or the OS keyring of this machine. Tests build their own fake config folder in a `tempfile::tempdir()` and pass paths explicitly (`ClaudePaths::for_config_dir`, `AppPaths::at`). Tests never call `ClaudePaths::resolve`, `AppPaths::resolve` or `store::open_secrets`, and never use `KeyringSecrets`.
+1. **Never touch the real Claude Code files.** No code, test or command may read or write `~/.claude`, `~/.claude.json`, seatswap's data folder (`~/.config/seatswap`, on Windows `%APPDATA%\seatswap`) or the OS keyring of this machine. Tests build their own fake config folder in a `tempfile::tempdir()` and pass paths explicitly (`ClaudePaths::for_config_dir`, `AppPaths::at`). Tests never call `ClaudePaths::resolve`, `AppPaths::resolve` or `store::open_secrets`, and never use `KeyringSecrets`. On Windows, setting `HOME` does not move the home folder, so only the explicit paths protect a test; registry tests write only under a throw-away key `HKCU\Software\seatswap-test-…` and delete it; and never start the tray app (`seatswap` or `seatswap-tray` without a subcommand) on a machine with a real login.
 2. **No silent defaults, clamps or fallbacks.** An invalid value is an error with a clear message, never quietly replaced. The only allowed fallbacks are the ones the spec names (e.g. keyring → 0600 files, with a warning the UI shows).
-3. **One way per job.** Use the module that owns a job (`atomic::write_atomic` for every file write, `paths` for every path, `api` for every HTTP call). Never write a second helper beside an existing one.
+3. **One way per job.** Use the module that owns a job (`atomic` for every file write, file mode and private folder; `paths` for every path; `api` for every HTTP call; `gui/registry.rs` for the Windows registry). Never write a second helper beside an existing one. A `cfg` for the operating system belongs in the module that owns the difference, not at its callers.
 4. **Never log or print a token.** At most the last 4 characters of a refresh token.
 5. **Keep unknown data.** When rewriting `.credentials.json` or `.claude.json`, every key we do not own stays exactly as it was, in the same order (`serde_json` is built with `preserve_order`).
 6. No `unsafe`. No `unwrap()`/`expect()` outside tests, except on values the code just proved present.

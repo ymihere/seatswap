@@ -1,10 +1,10 @@
 # seatswap
 
-[![CI](https://github.com/ymihere/seatswap/actions/workflows/ci.yml/badge.svg)](https://github.com/ymihere/seatswap/actions/workflows/ci.yml)
 [![Licence: MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
 
-A tray app and command line tool that switches [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
-between several Claude accounts with one click. Only the login is swapped. Your `~/.claude` stays
+A tray app and command line tool for Linux and Windows that switches
+[Claude Code](https://docs.anthropic.com/en/docs/claude-code) between several Claude accounts with
+one click. Only the login is swapped. Your `~/.claude` (on Windows `%USERPROFILE%\.claude`) stays
 the same for every account: memory, skills, plugins, hooks, settings and history are shared.
 
 The tray icon shows the active account's abbreviation with a ring for how much of its limit is
@@ -24,7 +24,7 @@ see at a glance which one still has room.
 
 ## Status
 
-Early (0.1). Built and used daily on **Linux Mint 22 Cinnamon (X11)**. On Windows 11 it builds
+Built and used daily on **Linux Mint 22 Cinnamon (X11)**. On Windows 11 it builds
 and passes its tests (Claude Code keeps its login in the same file there), and the tray app had
 its first run there on 2026-11-11; not every check of that run is done yet. macOS is
 not supported yet: Claude Code keeps its login in the Keychain there, and seatswap does not
@@ -56,8 +56,16 @@ install -m 0755 seatswap-*/seatswap ~/.local/bin/
 ```
 
 It needs WebKitGTK 4.1 at run time (Debian, Ubuntu, Mint:
-`sudo apt install libwebkit2gtk-4.1-0`). Built on Linux Mint 22 (glibc 2.39); on an
-older system, build from source.
+`sudo apt install libwebkit2gtk-4.1-0`). Built on Ubuntu 24.04 (glibc 2.39, the same as Linux
+Mint 22); on an older system, build from source.
+
+**Prebuilt (Windows x86_64):** download `seatswap-<version>-x86_64-windows.zip` from the
+[releases](https://github.com/ymihere/seatswap/releases) and unpack `seatswap.exe` and
+`seatswap-tray.exe` into one folder, best one that is on your `PATH`. Start `seatswap-tray.exe`
+for the tray app; `seatswap.exe` is the command line. Keep the two side by side: "start at
+login" starts the `seatswap-tray.exe` next to the program you ran. The programs are not signed,
+so Windows may ask before the first start. They need the WebView2 runtime, which Windows 11
+has; on Windows 10 install it from Microsoft if the pop-up does not open.
 
 **From source:** you need Rust ≥ 1.91
 ([rustup](https://rustup.rs)) and, on Linux, the libraries Tauri needs. On Debian, Ubuntu and
@@ -77,13 +85,22 @@ cargo build --release -p seatswap
 install -m 0755 target/release/seatswap ~/.local/bin/
 ```
 
-Start it with `seatswap`. It adds itself to your desktop's autostart (switch it off under
-*Settings → Start at login*). The tray needs a StatusNotifierItem host: Cinnamon, KDE Plasma, Xfce
-and MATE have one; GNOME needs the *AppIndicator and KStatusNotifierItem Support* extension.
-Without one, seatswap runs without an icon and says so; `seatswap panel` opens the pop-up, and the
-icon appears once a tray does.
+On Windows the same `cargo build` (with Rust's default MSVC toolchain) leaves `seatswap.exe` and
+`seatswap-tray.exe` in `target\release`; copy both into one folder.
 
 Only the command line, without the tray: `cargo build --release -p seatswap --no-default-features`.
+
+### Starting it
+
+- **Linux:** start it with `seatswap`. The tray needs a StatusNotifierItem host: Cinnamon, KDE
+  Plasma, Xfce and MATE have one; GNOME needs the *AppIndicator and KStatusNotifierItem Support*
+  extension. Without one, seatswap runs without an icon and says so; `seatswap panel` opens the
+  pop-up, and the icon appears once a tray does.
+- **Windows:** start `seatswap-tray.exe`. Windows puts a new tray icon into the overflow area
+  behind the `^` arrow next to the clock; drag it onto the taskbar to keep it in view.
+
+On both, seatswap adds itself to the programs started at login (switch it off under
+*Settings → Start at login*).
 
 ## Getting started
 
@@ -104,8 +121,9 @@ Each account gets a one- or two-letter abbreviation and a colour, both editable 
 | Hover | Tooltip with the active account's session and weekly usage |
 | In the pop-up | ↑/↓ move, Enter switches, 1–9 switch directly, `,` settings, Esc closes |
 
-There is no built-in global shortcut yet. Bind `seatswap panel` to a key in your desktop's
-keyboard settings (Ctrl+Alt+C, for example).
+There is no built-in global shortcut yet. On Linux, bind `seatswap panel` to a key in your
+desktop's keyboard settings (Ctrl+Alt+C, for example). On Windows the command for such a shortcut
+is `seatswap-tray.exe panel`, which opens no console window.
 
 ## Command line
 
@@ -125,14 +143,26 @@ Every command takes `--claude-config-dir DIR` (default: the setting, then `$CLAU
 then `~/.claude`) and `--data-dir DIR` (default: `~/.config/seatswap` on Linux,
 `%APPDATA%\seatswap` on Windows).
 
+On Windows, `seatswap-tray.exe` is the same program without a console window: use it to start
+the tray app, and `seatswap.exe` for everything you want to read in a terminal.
+
 ## What it does with your login
 
 - **What changes on a switch:** only the login entries in `~/.claude/.credentials.json` and the
-  `oauthAccount` entry in `~/.claude.json`. Every
+  `oauthAccount` entry in `~/.claude.json` (on Windows both are under `%USERPROFILE%`). Every
   other key in those files is kept exactly as it was, in the same order.
+- **One backup:** before seatswap writes to one of these two files for the first time, it keeps a
+  copy next to it, named `<file>.seatswap-backup`. The copy contains the login of that moment and
+  is never updated.
 - **Where stored logins live:** in your system keyring (Secret Service on Linux, Credential
-  Manager on Windows). If no keyring is available, in `0600` files in the data
-  folder, and the pop-up says so.
+  Manager on Windows). If no keyring is available, in files in the data folder, and the pop-up
+  says so. On Linux those files have mode `0600`; on Windows they are protected only by the
+  permissions of your user folder.
+- **What else it writes:** its own data folder, and the entry that starts it at login
+  (`~/.config/autostart/seatswap.desktop` on Linux, the value `seatswap` under
+  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` on Windows). On Windows it also registers
+  the name its notifications are shown under
+  (`HKCU\Software\Classes\AppUserModelId\dev.seatswap.app`).
 - **Network:** the usage endpoint (`api.anthropic.com/api/oauth/usage`) and Claude Code's token
   endpoint (`platform.claude.com/v1/oauth/token`, with Claude Code's own client id) to refresh
   stored logins. Nothing else, and never anywhere but Anthropic.
@@ -153,6 +183,7 @@ Whether using a subscription login this way is within Anthropic's terms is for y
 | GNOME | Needs the AppIndicator extension |
 | Wayland sessions | Expected to work; the pop-up is centred, the compositor places it |
 | Windows 11 | Builds and passes its tests; first run on 2026-11-11 (tray app, start at login); a switch and the notifications are not confirmed yet. `seatswap.exe` is the CLI, `seatswap-tray.exe` the same program without a console window (autostart, Start menu). Works while Claude Code keeps its login in `.credentials.json`; a newer Claude Code can move it into Windows Credential Manager, which is not supported yet |
+| Windows 10 (1803 or later) | Expected to work; not run yet |
 | macOS | Not yet: needs Keychain support for Claude Code's login |
 
 ## Development

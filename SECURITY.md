@@ -11,8 +11,9 @@ in public issues. You will get an answer within a week.
 seatswap handles Claude login tokens, so it is built to keep them where they belong:
 
 - **Tokens stay local.** Stored logins live in the system keyring (Secret Service on Linux,
-  Credential Manager on Windows). Without a keyring they go into `0600` files in a `0700` data
-  folder, and the pop-up warns about it.
+  Credential Manager on Windows). Without a keyring they go into files in the data folder, and
+  the pop-up warns about it. On Linux those are `0600` files in a `0700` folder; Windows has no
+  such modes, so there they are protected only by the permissions of the user's own folder.
 - **Tokens go only to Anthropic.** The only network calls are the usage endpoint
   (`api.anthropic.com`) and Claude Code's token endpoint (`platform.claude.com`), both over HTTPS.
 - **No token in output.** Logs, error messages and command output never contain a token; at most
@@ -22,7 +23,8 @@ seatswap handles Claude login tokens, so it is built to keep them where they bel
   atomic (temporary file, then rename), and the first write keeps a `.seatswap-backup` copy.
 - **Locks.** A switch holds Claude Code's own lock files and its own app lock, so it never
   interleaves with a token refresh or a settings write by Claude Code.
-- **No shell.** The app runs no commands; the autostart entry is a plain desktop file.
+- **No shell.** The app runs no commands. The autostart entry is a plain desktop file on Linux
+  and one value under the current user's `Run` registry key on Windows.
 
 ## Scope
 

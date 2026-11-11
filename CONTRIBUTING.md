@@ -1,7 +1,7 @@
 # Contributing to seatswap
 
-Thanks for helping! Bug reports and reports from desktops other than Cinnamon are especially
-welcome, and so is help with Windows and macOS.
+Thanks for helping! Bug reports and reports from desktops other than Cinnamon and from Windows
+are especially welcome, and so is help with macOS.
 
 ## Development setup
 
@@ -21,8 +21,12 @@ CLAUDE_CONFIG_DIR=~/cs-test claude          # log in to a test account in its ow
 cargo run -p seatswap -- --claude-config-dir ~/cs-test --data-dir /tmp/sc-data list
 ```
 
+On Windows use the same two options with Windows folders. Setting `HOME` does not move the home
+folder there, so the explicit folders are what keeps a test run away from your real login.
+
 Tests never touch `~/.claude`, `~/.claude.json`, the app's data folder or the system keyring:
-they build a fake config folder in a temporary directory and pass every path explicitly.
+they build a fake config folder in a temporary directory and pass every path explicitly. On
+Windows, tests that write to the registry use a throw-away key and delete it afterwards.
 Keep it that way in new tests.
 
 ## Tests and lints

@@ -29,7 +29,7 @@ body:
   - type: input
     id: desktop
     attributes:
-      label: OS and desktop (e.g. Linux Mint 22.2 Cinnamon, X11)
+      label: OS and desktop (e.g. Linux Mint 22.2 Cinnamon, X11; or Windows 11)
     validations:
       required: true
   - type: textarea
