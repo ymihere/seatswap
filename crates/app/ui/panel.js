@@ -802,10 +802,10 @@ function renderCard(view, index) {
     main.appendChild(renderLoggedOut());
   } else {
     const rows = [];
-    const session = findLimit(view, "session");
-    if (session) rows.push(renderUsageRow("Session", session, true));
     const week = findLimit(view, "weekly_all");
     if (week) rows.push(renderUsageRow("Week", week, true));
+    const session = findLimit(view, "session");
+    if (session) rows.push(renderUsageRow("Session", session, true));
     for (const scoped of scopedLimits(view)) {
       rows.push(renderUsageRow(scoped.model || "Scoped", scoped, false));
     }
@@ -917,25 +917,33 @@ function renderGauge(view) {
   const session = findLimit(view, "session");
   const week = findLimit(view, "weekly_all");
 
+  // Outer ring: the week (the limit that matters most). Inner ring: the 5 h
+  // session, left out entirely on plans that have no session limit.
   setupArc(
     gauge,
     gauge.querySelector(".ring-arc.ring-outer"),
-    gauge.querySelector(".grad-session"),
-    session,
-    view,
-    "session"
-  );
-  setupArc(
-    gauge,
-    gauge.querySelector(".ring-arc.ring-inner"),
     gauge.querySelector(".grad-week"),
     week,
     view,
     "week"
   );
+  setupArc(
+    gauge,
+    gauge.querySelector(".ring-arc.ring-inner"),
+    gauge.querySelector(".grad-session"),
+    session,
+    view,
+    "session"
+  );
 
+  const weekText = gauge.querySelector(".gauge-week");
+  setGaugeText(weekText, week);
   setGaugeText(gauge.querySelector(".gauge-session"), session);
-  setGaugeText(gauge.querySelector(".gauge-week"), week);
+  if (!session) {
+    gauge.querySelector(".ring-track.ring-inner").remove();
+    // Alone in the middle: centre the week's figure vertically.
+    weekText.setAttribute("y", "36");
+  }
   return gauge;
 }
 

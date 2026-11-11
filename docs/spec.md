@@ -526,7 +526,7 @@ The target is somewhere between the macOS Control Centre and Raycast: one floati
   - Dark: background `#0f1115`, cards `#171a21`, text `#e7e9ee`, muted text `#8b93a7`.
   - Light: background `#f6f7f9`, cards `#ffffff`, text `#0f1115`.
 - **Type:** Inter, or the system UI font as a fallback. Numbers use tabular figures so percentages don't jitter.
-- **Gauges:** two concentric rings per account. The outer ring is the 5 h session, the inner the week.
+- **Gauges:** two concentric rings per account. The outer ring is the week, the inner the 5 h session; the week's percent is the large figure in the middle. The bars beside the gauge follow the same order: week, then session, then the per-model limits. On a plan without a session limit the inner ring is left out (no grey track) and the week's figure sits centred.
   - Rings fill with an ease-out animation (400 ms) when the pop-up opens and when values change.
   - Colours follow §7.3, drawn as a soft gradient along the arc, with a faint glow on the red state.
 - **Account colour:** a 3 px accent bar on the card's left edge and the abbreviation badge.
@@ -542,15 +542,15 @@ The target is somewhere between the macOS Control Centre and Raycast: one floati
 │  seatswap                           ⟳ 12 s ago  ⚙  ✕ │
 │                                                      │
 │ ▌╭────╮  AC  Acme ✎                       ● Active   │
-│ ▌│ 97 │  someone@… · Team                            │
-│ ▌│ 48 │  Session   ████████████████████▉  97 % 1h12m │
-│ ▌╰────╯  Week      █████████▋             48 %  Sun  │
+│ ▌│ 48 │  someone@… · Team                            │
+│ ▌│ 97 │  Week      █████████▋             48 %  Sun  │
+│ ▌╰────╯  Session   ████████████████████▉  97 % 1h12m │
 │ ▌        Fable     ████████▋              43 %       │
 │                                                      │
 │ ▌╭────╮  P   Private                       [ Switch ]│
-│ ▌│ 12 │  …@example.com · Ultra                       │
-│ ▌│ 31 │  Session   ██▍                    12 %  3h05 │
-│ ▌╰────╯  Week      ██████▏                31 %  Thu  │
+│ ▌│ 31 │  …@example.com · Ultra                       │
+│ ▌│    │  Week      ██████▏                31 %  Thu  │
+│ ▌╰────╯  Opus      ██▍                    12 %       │
 │                                                      │
 │  ⚠ AC is almost out. P has room — switch?   [Switch] │
 │                                                      │
