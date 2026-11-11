@@ -37,7 +37,6 @@ const LEVEL_COLORS = {
   locked: "#ef4444",
 };
 
-const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 const TAURI_GLOBAL = typeof window !== "undefined" ? window.__TAURI__ : undefined;
 const HAS_TAURI = Boolean(
@@ -163,39 +162,6 @@ function shortPercent(value) {
 
 function fmtPercent(value) {
   return `${shortPercent(value)} %`;
-}
-
-// Time to a reset, the same rule as `format::format_reset_at` in Rust (change
-// both together): under 24 h `35m` / `1h05m`, up to 48 h `1d18h`, beyond that
-// the local weekday and clock time `Sun 02:00`. Minutes round up.
-function resetText(iso) {
-  const time = resetMillis(iso);
-  if (!Number.isFinite(time)) return "";
-  const seconds = Math.floor((time - Date.now()) / 1000);
-  if (seconds <= 0) return "0m";
-  if (seconds > 48 * 3600) {
-    return `${WEEKDAYS[new Date(time).getDay()]} ${clockText(iso)}`;
-  }
-  const minutes = Math.ceil(seconds / 60);
-  if (minutes < 60) return `${minutes}m`;
-  if (minutes < 24 * 60) {
-    return `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, "0")}m`;
-  }
-  return `${Math.floor(minutes / 1440)}d${Math.floor((minutes % 1440) / 60)}h`;
-}
-
-// A reset time rounded up to the full minute: the server sends a moment just
-// before the boundary (`00:59:59.59`). Same as `reset_minute` in Rust.
-function resetMillis(iso) {
-  return Math.ceil(Date.parse(iso || "") / 60000) * 60000;
-}
-
-// Local clock time of a reset (rounded up to the full minute).
-function clockText(iso) {
-  const time = resetMillis(iso);
-  if (!Number.isFinite(time)) return "";
-  const date = new Date(time);
-  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
 function ageText(milliseconds) {
@@ -611,7 +577,7 @@ function renderBanners(container) {
 
 function banner(kind, icon, text, extraChildren) {
   const body = h("div", { class: "banner-body" }, [
-    h("div", { class: "banner-text", text: String(text) }),
+    h("div", { class: "banner-text" }, Array.isArray(text) ? text : String(text)),
   ]);
   if (extraChildren) {
     if (Array.isArray(extraChildren)) {
@@ -733,12 +699,11 @@ function renderSuggestionBanner(suggestion) {
   const to = findView(suggestion.toId);
   const fromName = accountLabel(from);
   const toName = to ? accountLabel(to) : "another account";
-  const reset = suggestion.fromResetsAt
-    ? ` (resets ${clockText(suggestion.fromResetsAt)})`
-    : "";
-  const text = `${fromName} is at ${fmtPercent(
-    suggestion.fromPercent
-  )}${reset} — switch to ${toName} (${fmtPercent(suggestion.toPercent)})?`;
+  const text = [`${fromName} is at ${fmtPercent(suggestion.fromPercent)}`];
+  if (suggestion.fromResetsAt) {
+    text.push(" (resets ", resetNode(suggestion.fromResetsAt, "clock"), ")");
+  }
+  text.push(` — switch to ${toName} (${fmtPercent(suggestion.toPercent)})?`);
 
   return banner("info", "⚠", text, [
     h("div", { class: "banner-actions" }, [
@@ -937,11 +902,10 @@ function renderUsageRow(name, limit, showReset) {
     );
   }
 
-  const reset = h("span", { class: "reset-time" });
-  if (showReset && limit.resetsAt) {
-    reset.dataset.resetsAt = String(limit.resetsAt);
-    reset.textContent = resetText(limit.resetsAt);
-  }
+  const reset =
+    showReset && limit.resetsAt
+      ? resetNode(limit.resetsAt, "countdown", "reset-time")
+      : h("span", { class: "reset-time" });
 
   return h("div", { class: "usage-row" }, [
     h("span", { class: "usage-name", text: name, title: name }),
@@ -2155,10 +2119,42 @@ function updateAge() {
   node.textContent = ageText(Date.now() - time);
 }
 
-function updateResetTimes() {
-  for (const node of document.querySelectorAll("[data-resets-at]")) {
-    const text = resetText(node.getAttribute("data-resets-at"));
-    if (node.textContent !== text) node.textContent = text;
+// A reset time to be written by `updateResetTimes`. `style` is `countdown`
+// (`35m`, `1h05m`, `1d18h`, `Sun 02:00`) or `clock` (`14:40`, `Sun 02:00`).
+function resetNode(iso, style, className) {
+  return h("span", {
+    class: className || "",
+    "data-resets-at": String(iso),
+    "data-reset-style": style,
+  });
+}
+
+// Every reset time on the page, written by the Rust side (`reset_texts`), so
+// the panel, the tray menu, the tooltip and the CLI share one rule
+// (`format::format_reset_at`, `format::format_reset_clock`).
+async function updateResetTimes() {
+  const nodes = Array.from(document.querySelectorAll("[data-resets-at]"));
+  if (nodes.length === 0) return;
+  const resets = nodes.map((node) => ({
+    at: node.getAttribute("data-resets-at"),
+    style: node.getAttribute("data-reset-style"),
+  }));
+  try {
+    const texts = await invoke("reset_texts", { resets });
+    if (!Array.isArray(texts) || texts.length !== nodes.length) {
+      throw new Error("reset_texts returned an unexpected reply");
+    }
+    nodes.forEach((node, index) => {
+      if (node.textContent !== texts[index]) node.textContent = texts[index];
+      node.removeAttribute("title");
+    });
+  } catch (error) {
+    const message = errorMessage(error);
+    console.error(`reset times: ${message}`);
+    for (const node of nodes) {
+      node.textContent = "?";
+      node.title = message;
+    }
   }
 }
 
@@ -2797,6 +2793,14 @@ async function fixtureInvoke(command, args) {
         rgba: Array.from(fixtureIcon(abbr, color, size)),
       }));
     }
+
+    // Only a stand-in so the page can be looked at in a browser: the real
+    // texts come from `format.rs`, which a browser cannot run.
+    case "reset_texts":
+      return (args.resets || []).map((reset) => {
+        const date = new Date(reset.at);
+        return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+      });
 
     case "fit_panel":
       return null;

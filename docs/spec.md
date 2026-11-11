@@ -629,12 +629,12 @@ From daily use on Linux Mint 22 Cinnamon (X11) and the headless test runs, as of
 - *The pop-up did not close* (Esc, click elsewhere). Muffin, Cinnamon's window manager, refuses a focus request without a timestamp and ignores the first one while the window is still being mapped, so the pop-up never had the keyboard focus. Now it asks with the X server's time and repeats the request after mapping until it has the focus (`panel::focus_when_mapped`).
 - *The pop-up flashed white at its old place before appearing.* It was shown first and moved and resized afterwards. Now it is built hidden at startup and only shown once the page has measured its height and it sits at its final place (`pending_show`, see the panel section of `docs/implementation.md`).
 - *A second start did not find the first* when `--data-dir` named the same folder differently (relative and absolute): the socket's name was a hash of the spelling. Now it is a hash of the folder's real path (`AppPaths::gui_socket`).
+- *The reset-time rule existed twice*, in Rust for the tray and the CLI and in the pop-up's JavaScript, and the suggestion's clock time already differed (no weekday beyond 24 h). The pop-up now asks the Rust side for every reset text (`panel::reset_texts`).
 - *Inactive accounts kept an old plan label.* The plan was only recomputed when an account was live; the refresh of inactive logins skipped it. All three places that store a login now go through `Account::note_stored_login`.
 
 **Open:**
 - A drop-down list in the settings must not close the pop-up (its menu is a separate window that takes the focus). Not yet seen either way on the desktop.
 - Opening the pop-up while it is open closed it in the headless test (`seatswap panel settings` on an open pop-up). To check on the desktop, especially pressing the shortcut twice.
 - In the headless test the pop-up closed as soon as the mouse left it. Probably because that test screen has no window manager (focus follows the mouse); seen only there.
-- The reset-time rule exists twice: in Rust (`format::format_reset_at`, tray menu and CLI) and in the pop-up's JavaScript (`resetText`). Both carry a note to change them together; one copy would be better (the pop-up asking the Rust side for the text).
 - No built-in global shortcut (§8.3).
 - Without a StatusNotifierWatcher on the session bus the tray cannot start, so the headless smoke test needs one.

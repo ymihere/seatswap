@@ -37,7 +37,7 @@ pub(crate) fn format_age(fetched_at: DateTime<Utc>, now: DateTime<Utc>) -> Strin
 
 /// A reset time as shown: rounded up to the full minute. The server sends a
 /// moment just before the boundary (`00:59:59.59`), which would read `00:59`
-/// instead of `01:00`. `panel.js` `resetMillis` does the same.
+/// instead of `01:00`.
 fn reset_minute(resets_at: DateTime<Utc>) -> DateTime<Utc> {
     let into_minute = resets_at.timestamp().rem_euclid(60) * 1_000_000_000
         + i64::from(resets_at.timestamp_subsec_nanos());
@@ -52,7 +52,7 @@ fn reset_minute(resets_at: DateTime<Utc>) -> DateTime<Utc> {
 /// under 24 h hours and minutes (`35m`, `1h05m`), up to 48 h days and hours
 /// (`1d18h`), beyond 48 h the local weekday and clock time (`Sun 02:00`).
 /// Minutes round up, so a reset 30 s away reads `1m`, not `0m`.
-/// `panel.js` `resetText` follows the same rule; change both together.
+/// The panel gets its texts from here too (`panel::reset_texts`).
 pub(crate) fn format_reset_at<Tz: TimeZone>(
     resets_at: DateTime<Utc>,
     now: DateTime<Utc>,

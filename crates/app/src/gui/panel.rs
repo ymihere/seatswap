@@ -8,7 +8,8 @@
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
+use chrono::{DateTime, Local, TimeZone, Utc};
+use serde::{Deserialize, Serialize};
 use tauri::webview::PageLoadEvent;
 use tauri::{
     AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, State, WebviewUrl, WebviewWindow,
@@ -656,6 +657,41 @@ pub(crate) fn icon_preview(abbr: String, color: String) -> Result<Vec<IconPx>, S
         .collect())
 }
 
+/// How the panel writes a reset time: `countdown` as in the cards
+/// (`format_reset_at`), `clock` as in the switch suggestion (`format_reset_clock`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum ResetStyle {
+    Countdown,
+    Clock,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub(crate) struct ResetRequest {
+    at: DateTime<Utc>,
+    style: ResetStyle,
+}
+
+/// The panel's reset times, one text per request in order, so the panel uses
+/// the same rule as the tray and the CLI instead of a copy in JavaScript.
+#[tauri::command]
+pub(crate) fn reset_texts(resets: Vec<ResetRequest>) -> Vec<String> {
+    reset_texts_at(&resets, Utc::now(), &Local)
+}
+
+fn reset_texts_at<Tz: TimeZone>(resets: &[ResetRequest], now: DateTime<Utc>, tz: &Tz) -> Vec<String>
+where
+    Tz::Offset: std::fmt::Display,
+{
+    resets
+        .iter()
+        .map(|reset| match reset.style {
+            ResetStyle::Countdown => format::format_reset_at(reset.at, now, tz),
+            ResetStyle::Clock => format::format_reset_clock(reset.at, now, tz),
+        })
+        .collect()
+}
+
 #[tauri::command]
 pub(crate) fn fit_panel(
     app: AppHandle,
@@ -941,6 +977,38 @@ mod tests {
         .expect("a switch succeeds");
         assert_eq!(message, "Switched to AC — Acme");
         assert!(cleared);
+    }
+
+    /// The panel sends what `panel.js` puts into `data-resets-at` (the
+    /// snapshot's RFC 3339 times) and gets the tray's and the CLI's texts back.
+    #[test]
+    fn reset_texts_use_the_shared_rules_in_order() {
+        let resets: Vec<ResetRequest> = serde_json::from_value(serde_json::json!([
+            { "at": "2026-11-11T14:39:59.591693Z", "style": "countdown" },
+            { "at": "2026-11-11T14:39:59.591693Z", "style": "clock" },
+            { "at": "2026-11-15T02:00:00Z", "style": "countdown" },
+            { "at": "2026-11-15T02:00:00Z", "style": "clock" },
+        ]))
+        .expect("the panel's request");
+        let now = DateTime::parse_from_rfc3339("2026-11-11T13:35:00Z")
+            .expect("now")
+            .with_timezone(&Utc);
+        assert_eq!(
+            reset_texts_at(&resets, now, &Utc),
+            vec!["1h05m", "14:40", "Sun 02:00", "Sun 02:00"]
+        );
+    }
+
+    #[test]
+    fn a_reset_request_with_an_unknown_style_or_time_is_refused() {
+        let unknown_style = serde_json::from_value::<ResetRequest>(
+            serde_json::json!({ "at": "2026-11-11T14:40:00Z", "style": "weekday" }),
+        );
+        assert!(unknown_style.is_err());
+        let bad_time = serde_json::from_value::<ResetRequest>(
+            serde_json::json!({ "at": "tomorrow", "style": "clock" }),
+        );
+        assert!(bad_time.is_err());
     }
 
     #[test]
