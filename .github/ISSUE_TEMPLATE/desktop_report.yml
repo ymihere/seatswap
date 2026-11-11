@@ -1,0 +1,25 @@
+name: Desktop report
+description: How seatswap behaves on a desktop or OS other than Cinnamon.
+labels: [platform]
+body:
+  - type: input
+    id: desktop
+    attributes:
+      label: OS, desktop and session (e.g. Fedora 41, KDE Plasma 6.2, Wayland)
+    validations:
+      required: true
+  - type: checkboxes
+    id: works
+    attributes:
+      label: What works?
+      options:
+        - label: The tray icon shows and updates
+        - label: The tooltip shows the usage
+        - label: Left click opens the pop-up
+        - label: Right click opens the menu
+        - label: The pop-up closes on Esc and on a click elsewhere
+        - label: Switching works with a Claude Code session running
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes, screenshots

@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>seatswap</title>
+  <link rel="stylesheet" href="panel.css">
+</head>
+<body>
+  <div class="panel" id="panel">
+    <header class="panel-header">
+      <span class="title">seatswap</span>
+      <button class="icon-btn refresh-btn" id="refresh-btn" type="button" title="Refresh usage now">
+        <span class="refresh-glyph" aria-hidden="true">&#x27F3;</span>
+        <span class="poll-age" id="poll-age">never</span>
+      </button>
+      <button class="icon-btn" id="settings-btn" type="button" title="Settings" aria-label="Settings">
+        <span aria-hidden="true">&#x2699;</span>
+      </button>
+      <button class="icon-btn" id="close-btn" type="button" title="Close (Esc)" aria-label="Close">
+        <span aria-hidden="true">&#x2715;</span>
+      </button>
+    </header>
+
+    <main id="view-main" class="view-main">
+      <div class="banners" id="banners"></div>
+      <div class="cards" id="cards" role="list"></div>
+      <footer class="footer">
+        <button class="btn ghost add-btn" id="add-btn" type="button">+ Add account</button>
+      </footer>
+    </main>
+
+    <section id="view-add" class="view" hidden></section>
+    <section id="view-settings" class="view" hidden></section>
+  </div>
+
+  <template id="gauge-template">
+    <svg class="gauge" viewBox="0 0 64 64" role="img" aria-hidden="true">
+      <defs>
+        <linearGradient class="grad-session" x1="0" y1="0" x2="1" y2="1">
+          <stop class="grad-start" offset="0"></stop>
+          <stop class="grad-end" offset="1"></stop>
+        </linearGradient>
+        <linearGradient class="grad-week" x1="0" y1="0" x2="1" y2="1">
+          <stop class="grad-start" offset="0"></stop>
+          <stop class="grad-end" offset="1"></stop>
+        </linearGradient>
+      </defs>
+      <circle class="ring-track ring-outer" cx="32" cy="32" r="26"></circle>
+      <circle class="ring-arc ring-outer" cx="32" cy="32" r="26" transform="rotate(-90 32 32)"></circle>
+      <circle class="ring-track ring-inner" cx="32" cy="32" r="18"></circle>
+      <circle class="ring-arc ring-inner" cx="32" cy="32" r="18" transform="rotate(-90 32 32)"></circle>
+      <text class="gauge-session" x="32" y="29" text-anchor="middle"></text>
+      <text class="gauge-week" x="32" y="42" text-anchor="middle"></text>
+    </svg>
+  </template>
+
+  <script type="module" src="panel.js"></script>
+</body>
+</html>

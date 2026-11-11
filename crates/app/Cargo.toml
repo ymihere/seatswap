@@ -1,0 +1,50 @@
+[package]
+name = "seatswap"
+description = "Switch Claude Code between Claude accounts with one click (tray app + CLI)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme = "../../README.md"
+keywords = ["claude", "claude-code", "tray", "accounts", "switcher"]
+categories = ["command-line-utilities", "gui"]
+
+[[bin]]
+name = "seatswap"
+path = "src/main.rs"
+
+[features]
+default = ["gui"]
+gui = ["dep:tauri", "dep:tauri-build", "dep:tiny-skia", "dep:ab_glyph", "dep:notify-rust", "dep:tray-icon", "dep:gtk", "dep:gdkx11"]
+
+[dependencies]
+seatswap-core = { path = "../core" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+clap = { version = "4", features = ["derive"] }
+tauri = { version = "2", features = ["tray-icon", "image-png"], optional = true }
+tiny-skia = { version = "0.11", optional = true }
+ab_glyph = { version = "0.2", optional = true }
+notify-rust = { version = "4", optional = true }
+
+# Linux: Tauri's tray backend (libappindicator) reports no clicks (every click
+# opens the menu) and drops the tooltip. Enabling tray-icon's StatusNotifierItem
+# backend (ksni) gives left click → panel, right click → menu, and the tooltip;
+# tray-icon uses ksni when both backends are on. Same tray-icon Tauri already
+# uses, so there is still one tray code path.
+[target.'cfg(target_os = "linux")'.dependencies]
+tray-icon = { version = "0.25", default-features = false, features = ["ksni"], optional = true }
+# The panel asks for focus with the X server's time (panel.rs `take_focus`);
+# the same versions Tauri already uses.
+gtk = { version = "0.18", optional = true }
+gdkx11 = { version = "0.18", optional = true }
+
+[build-dependencies]
+tauri-build = { version = "2", features = [], optional = true }
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,11 @@
+[package]
+name = "tray-spike"
+version = "0.0.0"
+edition = "2021"
+description = "Phase 0 item 8: Tauri 2 tray on Cinnamon - dynamic icon, label, live menu text"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }

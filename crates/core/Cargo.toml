@@ -1,0 +1,26 @@
+[package]
+name = "seatswap-core"
+description = "Core of seatswap: Claude Code login files, locks, account store, usage API, switching"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+dirs = "6"
+keyring = { version = "3", features = ["sync-secret-service", "crypto-rust", "apple-native", "windows-native"] }
+ureq = { version = "2", features = ["json"] }
+fs4 = { version = "0.13", features = ["sync"] }
+notify = "8"
+uuid = { version = "1", features = ["v4"] }
+filetime = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
+tiny_http = "0.12"
