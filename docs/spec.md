@@ -630,10 +630,10 @@ From daily use on Linux Mint 22 Cinnamon (X11) and the headless test runs, as of
 - *The pop-up flashed white at its old place before appearing.* It was shown first and moved and resized afterwards. Now it is built hidden at startup and only shown once the page has measured its height and it sits at its final place (`pending_show`, see the panel section of `docs/implementation.md`).
 - *A second start did not find the first* when `--data-dir` named the same folder differently (relative and absolute): the socket's name was a hash of the spelling. Now it is a hash of the folder's real path (`AppPaths::gui_socket`).
 - *The reset-time rule existed twice*, in Rust for the tray and the CLI and in the pop-up's JavaScript, and the suggestion's clock time already differed (no weekday beyond 24 h). The pop-up now asks the Rust side for every reset text (`panel::reset_texts`).
+- *Picking a value in a settings drop-down closed the pop-up.* WebKitGTK shows the list as its own window that holds the input, so the pop-up lost the focus for as long as the list was open; the 150 ms recheck could not cover that. Now focus loss is ignored while a pop-up of seatswap holds the input (`panel::own_popup_open`). Reproduced and checked headless with Muffin, 2026-11-11.
 - *Inactive accounts kept an old plan label.* The plan was only recomputed when an account was live; the refresh of inactive logins skipped it. All three places that store a login now go through `Account::note_stored_login`.
 
 **Open:**
-- A drop-down list in the settings must not close the pop-up (its menu is a separate window that takes the focus). Not yet seen either way on the desktop.
 - Opening the pop-up while it is open closed it in the headless test (`seatswap panel settings` on an open pop-up). To check on the desktop, especially pressing the shortcut twice.
 - In the headless test the pop-up closed as soon as the mouse left it. Probably because that test screen has no window manager (focus follows the mouse); seen only there.
 - No built-in global shortcut (§8.3).

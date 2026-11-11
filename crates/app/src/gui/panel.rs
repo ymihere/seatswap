@@ -119,8 +119,8 @@ impl PanelState {
 /// A click on the tray icon right after focus loss hid the panel is the same
 /// click that took the focus away: it must not open the panel again.
 const REOPEN_GUARD: Duration = Duration::from_millis(400);
-/// Focus can leave for a moment (a drop-down list of a `<select>` opens its own
-/// window); the panel hides only if it is still unfocused after this delay.
+/// Focus loss is judged after this delay, once the window system has settled
+/// where the focus went (an opening drop-down list takes it a moment later).
 const FOCUS_RECHECK: Duration = Duration::from_millis(150);
 
 /// How long a hidden panel waits for the page's height before it appears anyway.
@@ -304,8 +304,8 @@ fn create(app: &AppHandle, view: &str) -> Result<WebviewWindow, String> {
     focus_when_mapped(&window)?;
 
     // Losing focus hides the pop-up (spec §11): clicking elsewhere is a dismiss.
-    // Checked again after FOCUS_RECHECK, so a focus that only passes through a
-    // drop-down list does not close it.
+    // Not while one of the panel's own pop-ups (a drop-down list) has the focus;
+    // that list closes on the next click outside and gives the focus back.
     let watched = window.clone();
     let handle = app.clone();
     window.on_window_event(move |event| {
@@ -316,7 +316,7 @@ fn create(app: &AppHandle, view: &str) -> Result<WebviewWindow, String> {
                 std::thread::sleep(FOCUS_RECHECK);
                 let main = handle.clone();
                 let _ = main.run_on_main_thread(move || {
-                    if window.is_focused().unwrap_or(true) {
+                    if window.is_focused().unwrap_or(true) || own_popup_open() {
                         return;
                     }
                     if window.hide().is_ok() {
@@ -401,6 +401,22 @@ fn retry_focus(gtk_window: gtk::ApplicationWindow, left: u32) {
     gtk::glib::timeout_add_local_once(FOCUS_RETRY_GAP, move || {
         retry_focus(gtk_window, left - 1);
     });
+}
+
+/// True while a pop-up of this process holds the input, such as the list of a
+/// `<select>`: WebKitGTK shows it as a separate window with a GTK grab, so the
+/// panel loses the focus for as long as the list is open (seen on Cinnamon and
+/// in the headless run with Muffin, 2026-11-11: picking a setting closed the
+/// panel).
+#[cfg(target_os = "linux")]
+fn own_popup_open() -> bool {
+    gtk::grab_get_current().is_some()
+}
+
+/// Elsewhere a drop-down list does not take the focus from its window.
+#[cfg(not(target_os = "linux"))]
+fn own_popup_open() -> bool {
+    false
 }
 
 #[cfg(not(target_os = "linux"))]
