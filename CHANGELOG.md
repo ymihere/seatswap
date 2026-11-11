@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-11-12
+
+### Changed
+- Pop-up gauges: the outer ring now shows the week and the inner ring the 5 h session; the
+  week's percent is the large figure in the middle. On plans without a session limit (Ultra) the
+  inner ring is left out instead of showing an empty grey track.
+- The usage bars beside the gauge follow the same order: week, session, then the per-model
+  limits.
+
 ## [1.0.1] - 2026-11-11
 
 ### Fixed
@@ -47,7 +56,8 @@ All notable changes to this project are documented here. The format follows
   starts later): it says so and shows the icon as soon as a tray appears; `seatswap panel` opens
   the pop-up meanwhile.
 
-[Unreleased]: https://github.com/ymihere/seatswap/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/ymihere/seatswap/compare/v1.0.2...HEAD
+[1.0.2]: https://github.com/ymihere/seatswap/releases/tag/v1.0.2
 [1.0.1]: https://github.com/ymihere/seatswap/releases/tag/v1.0.1
 [1.0.0]: https://github.com/ymihere/seatswap/releases/tag/v1.0.0
 [0.1.0]: https://github.com/ymihere/seatswap/releases/tag/v0.1.0
