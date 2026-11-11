@@ -46,7 +46,19 @@ read or write that yet.
 
 ## Install
 
-There are no prebuilt packages yet; build from source. You need Rust ≥ 1.91
+**Prebuilt (Linux x86_64):** download `seatswap-<version>-x86_64-linux.tar.gz` from the
+[releases](https://github.com/ymihere/seatswap/releases), then:
+
+```sh
+tar xzf seatswap-*-x86_64-linux.tar.gz
+install -m 0755 seatswap-*/seatswap ~/.local/bin/
+```
+
+It needs WebKitGTK 4.1 at run time (Debian, Ubuntu, Mint:
+`sudo apt install libwebkit2gtk-4.1-0`). Built on Linux Mint 22 (glibc 2.39); on an
+older system, build from source.
+
+**From source:** you need Rust ≥ 1.91
 ([rustup](https://rustup.rs)) and, on Linux, the libraries Tauri needs. On Debian, Ubuntu and
 Mint:
 
@@ -67,6 +79,8 @@ install -m 0755 target/release/seatswap ~/.local/bin/
 Start it with `seatswap`. It adds itself to your desktop's autostart (switch it off under
 *Settings → Start at login*). The tray needs a StatusNotifierItem host: Cinnamon, KDE Plasma, Xfce
 and MATE have one; GNOME needs the *AppIndicator and KStatusNotifierItem Support* extension.
+Without one, seatswap runs without an icon and says so; `seatswap panel` opens the pop-up, and the
+icon appears once a tray does.
 
 Only the command line, without the tray: `cargo build --release -p seatswap --no-default-features`.
 
