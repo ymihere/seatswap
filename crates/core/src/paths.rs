@@ -17,6 +17,12 @@ pub enum PathsError {
     NoConfigDir,
     #[error("{path} is too long for a Unix socket path (108 bytes or more)")]
     SocketPathTooLong { path: PathBuf },
+    #[error("cannot make {path} absolute: {source}")]
+    Absolute {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
     #[error("data folder {path}: {source}")]
     DataDir {
         path: PathBuf,
@@ -174,6 +180,17 @@ impl AppPaths {
         }
         Ok(path)
     }
+}
+
+/// A folder named on the command line as an absolute path, resolved against the
+/// current folder once at startup, so every later use (the autostart entry,
+/// messages, files) sees the same path. Lexical only: `..` and links stay as
+/// written (the socket name uses the real path, see [`AppPaths::gui_socket`]).
+pub fn absolute(path: &Path) -> Result<PathBuf, PathsError> {
+    std::path::absolute(path).map_err(|source| PathsError::Absolute {
+        path: path.to_path_buf(),
+        source,
+    })
 }
 
 /// The user's runtime folder (`$XDG_RUNTIME_DIR`), where the GUI's socket lives
@@ -345,6 +362,19 @@ mod tests {
             }
             other => panic!("expected SocketPathTooLong, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn absolute_joins_a_relative_folder_to_the_current_one() {
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(
+            absolute(Path::new("relative/data")).unwrap(),
+            cwd.join("relative/data")
+        );
+        assert_eq!(
+            absolute(Path::new("/home/u/.config/seatswap")).unwrap(),
+            Path::new("/home/u/.config/seatswap")
+        );
     }
 
     #[test]

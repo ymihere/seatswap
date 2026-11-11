@@ -16,8 +16,8 @@ pub(crate) enum AutostartError {
     NoConfigHome,
     #[error("$HOME is empty or not an absolute path: {0:?}")]
     HomeNotAbsolute(OsString),
-    #[error("cannot make the autostart argument absolute: {0}")]
-    CurrentDir(String),
+    #[error("autostart argument {0} is not an absolute path")]
+    RelativePath(PathBuf),
     #[error("{path}: {source}")]
     Io {
         path: PathBuf,
@@ -63,7 +63,8 @@ pub(crate) fn config_home() -> Result<PathBuf, AutostartError> {
 }
 
 /// The command-line flags the tray app was started with, so the autostart entry
-/// starts the same data folder and Claude folder. Both paths are absolute.
+/// starts the same data folder and Claude folder. The command line made both
+/// absolute (`paths::absolute`); a relative one here is an error.
 pub(crate) fn startup_arguments(
     data_dir: Option<&Path>,
     claude_config_dir: Option<&Path>,
@@ -76,15 +77,11 @@ pub(crate) fn startup_arguments(
         let Some(path) = path else {
             continue;
         };
-        let absolute = if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            std::env::current_dir()
-                .map_err(|error| AutostartError::CurrentDir(error.to_string()))?
-                .join(path)
-        };
+        if !path.is_absolute() {
+            return Err(AutostartError::RelativePath(path.to_path_buf()));
+        }
         arguments.push(flag.to_string());
-        arguments.push(absolute.display().to_string());
+        arguments.push(path.display().to_string());
     }
     Ok(arguments)
 }
@@ -237,17 +234,16 @@ mod tests {
     }
 
     #[test]
-    fn startup_arguments_make_a_relative_path_absolute() {
-        let arguments =
-            startup_arguments(Some(Path::new("relative/data")), None).expect("relative path");
-        assert_eq!(arguments[0], "--data-dir");
-        let path = Path::new(&arguments[1]);
-        assert!(path.is_absolute(), "{path:?} must be absolute");
-        assert!(path.ends_with("relative/data"), "{path:?}");
-
-        let claude = startup_arguments(None, Some(Path::new("relative/claude"))).expect("claude");
-        assert_eq!(claude[0], "--claude-config-dir");
-        assert!(Path::new(&claude[1]).is_absolute());
+    fn startup_arguments_refuse_a_relative_path() {
+        for (data, claude) in [
+            (Some(Path::new("relative/data")), None),
+            (None, Some(Path::new("relative/claude"))),
+        ] {
+            match startup_arguments(data, claude) {
+                Err(AutostartError::RelativePath(path)) => assert!(path.is_relative()),
+                other => panic!("expected RelativePath, got {other:?}"),
+            }
+        }
     }
 
     #[test]

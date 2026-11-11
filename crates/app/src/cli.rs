@@ -14,7 +14,7 @@ use serde::Serialize;
 
 use seatswap_core::api::{Api, Usage};
 use seatswap_core::engine::{suggestion, AccountView, Engine, PollReason, Suggestion};
-use seatswap_core::paths::{AppPaths, ClaudePaths, PathsError};
+use seatswap_core::paths::{self, AppPaths, ClaudePaths, PathsError};
 use seatswap_core::store::{self, Account, AccountsFile, LoginState, Settings, Store, StoreError};
 use seatswap_core::switcher::{self, LiveState, SwitchError, UnsavedPolicy};
 
@@ -46,6 +46,20 @@ struct Cli {
 
     #[command(subcommand)]
     command: Option<Command>,
+}
+
+impl Cli {
+    /// Make `--data-dir` and `--claude-config-dir` absolute once, before any
+    /// use, so the folders are the same whatever the current folder is later
+    /// (the autostart entry starts seatswap from the home folder).
+    fn make_folders_absolute(&mut self) -> Result<(), PathsError> {
+        for folder in [&mut self.data_dir, &mut self.claude_config_dir] {
+            if let Some(path) = folder.as_deref() {
+                *folder = Some(paths::absolute(path)?);
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -223,6 +237,11 @@ impl CliError {
 /// exit code. Errors are printed as `seatswap: <message>` on stderr.
 pub fn run() -> std::process::ExitCode {
     let mut cli = Cli::parse();
+    if let Err(error) = cli.make_folders_absolute() {
+        let error = CliError::from(error);
+        eprintln!("seatswap: {error}");
+        return std::process::ExitCode::from(error.exit_code());
+    }
     #[cfg(feature = "gui")]
     if cli.command.is_none() {
         return match run_gui(&cli) {

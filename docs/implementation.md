@@ -516,6 +516,11 @@ pub fn gui_socket(&self, runtime_dir: Option<&Path>) -> Result<PathBuf, PathsErr
     // A path of 108 bytes or more → PathsError::SocketPathTooLong { path } (sockaddr_un limit), never a
     // shortened path.
 pub fn runtime_dir() -> Option<PathBuf>;   // free function: $XDG_RUNTIME_DIR via dirs::runtime_dir
+pub fn absolute(path: &Path) -> Result<PathBuf, PathsError>;
+    // std::path::absolute (lexical, no link resolution); failure → PathsError::Absolute { path, source }.
+    // cli::run applies it to --data-dir and --claude-config-dir right after parsing, so everything
+    // downstream (autostart entry, messages, files) sees absolute folders; autostart::startup_arguments
+    // refuses a relative one (AutostartError::RelativePath) instead of resolving it again.
 // paths.rs, free function (the path only; the GUI writes it with atomic::write_atomic):
 pub fn autostart_file(xdg_config_home: &Path) -> PathBuf; // <xdg_config_home>/autostart/seatswap.desktop
 // store.rs: reading accounts.json needs no secrets. Store::load calls it (one way).
