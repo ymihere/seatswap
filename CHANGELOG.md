@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-11-11
+
 ### Added
 - Windows support (Windows 10 1803+ and 11): the same login files as on Linux, the single-instance
   socket, start at login through the `Run` registry key, notifications under the name
@@ -39,5 +41,6 @@ All notable changes to this project are documented here. The format follows
   starts later): it says so and shows the icon as soon as a tray appears; `seatswap panel` opens
   the pop-up meanwhile.
 
-[Unreleased]: https://github.com/ymihere/seatswap/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/ymihere/seatswap/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/ymihere/seatswap/releases/tag/v1.0.0
 [0.1.0]: https://github.com/ymihere/seatswap/releases/tag/v0.1.0
