@@ -12,7 +12,7 @@ use std::path::Path;
 
 use serde_json::{Map, Value};
 
-use crate::atomic::{backup_once, write_atomic};
+use crate::atomic::{backup_once, write_atomic, Access};
 use crate::paths::ClaudePaths;
 use crate::types::{Login, OAuthAccount, LOGIN_KEYS};
 
@@ -80,7 +80,7 @@ pub fn write_login(paths: &ClaudePaths, login: Option<&Login>) -> Result<(), Liv
 
     let bytes = json_bytes(path, &Value::Object(credentials), false)?;
     backup_once(path).map_err(|source| io_error(path, source))?;
-    write_atomic(path, &bytes, 0o600).map_err(|source| io_error(path, source))
+    write_atomic(path, &bytes, Access::Private).map_err(|source| io_error(path, source))
 }
 
 /// `oauthAccount` of `.claude.json`. Ok(None) when the file or the key is
@@ -118,7 +118,7 @@ pub fn write_identity(paths: &ClaudePaths, account: &OAuthAccount) -> Result<(),
 
     let bytes = json_bytes(path, &Value::Object(identity), true)?;
     backup_once(path).map_err(|source| io_error(path, source))?;
-    write_atomic(path, &bytes, 0o600).map_err(|source| io_error(path, source))
+    write_atomic(path, &bytes, Access::Private).map_err(|source| io_error(path, source))
 }
 
 fn parse_object(path: &Path, bytes: &[u8]) -> Result<Map<String, Value>, LiveError> {
@@ -156,6 +156,7 @@ fn io_error(path: &Path, source: io::Error) -> LiveError {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
 
@@ -168,11 +169,14 @@ mod tests {
         ClaudePaths::for_config_dir(&config, tmp.path())
     }
 
+    /// Write `bytes`; on Unix also set mode 0600, as Claude Code does.
     fn write_private(path: &Path, bytes: &[u8]) {
         fs::write(path, bytes).unwrap();
+        #[cfg(unix)]
         fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
     }
 
+    #[cfg(unix)]
     fn mode(path: &Path) -> u32 {
         fs::metadata(path).unwrap().permissions().mode() & 0o777
     }
@@ -244,6 +248,7 @@ mod tests {
 
         let bytes = fs::read(&paths.credentials_file).unwrap();
         assert!(!bytes.contains(&b'\n'), "credentials must stay one line");
+        #[cfg(unix)]
         assert_eq!(mode(&paths.credentials_file), 0o600);
         let after: Value = serde_json::from_slice(&bytes).unwrap();
         let map = after.as_object().unwrap();
@@ -289,6 +294,7 @@ mod tests {
 
         let bytes = fs::read(&paths.credentials_file).unwrap();
         assert!(!bytes.contains(&b'\n'));
+        #[cfg(unix)]
         assert_eq!(mode(&paths.credentials_file), 0o600);
         let map: Map<String, Value> = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(
@@ -348,6 +354,7 @@ mod tests {
         write_login(&paths, Some(&other_login())).unwrap();
         let backup = backup_path(&paths.credentials_file);
         assert_eq!(fs::read(&backup).unwrap(), original.as_bytes());
+        #[cfg(unix)]
         assert_eq!(mode(&backup), 0o600);
 
         write_login(&paths, None).unwrap();
@@ -412,6 +419,7 @@ mod tests {
         assert_eq!(map["numStartups"], json!(41));
         assert_eq!(map["oauthAccount"], Value::Object(account.0.clone()));
         assert_eq!(map["projects"], json!({"/home/u/x": {"allowedTools": []}}));
+        #[cfg(unix)]
         assert_eq!(mode(&paths.identity_file), 0o600);
         assert_eq!(read_identity(&paths).unwrap(), Some(account));
     }

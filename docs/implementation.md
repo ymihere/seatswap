@@ -1,10 +1,10 @@
-# seatswap — implementation notes (Linux v1)
+# seatswap — implementation notes
 
 The spec (`docs/spec.md`) says what the program does and why. This file fixes the module contracts, so slices built in parallel fit together. Signatures here are binding; bodies are free. Section numbers like §6.2 refer to the spec.
 
 Done already (do not rewrite): `types.rs` (`Login`, `OAuthAccount`, `LOGIN_KEYS`), `paths.rs` (`ClaudePaths`, `AppPaths`), `atomic.rs` (`write_atomic`, `backup_once`).
 
-Linux and macOS share the Unix code; Windows and the macOS Keychain are later work, not v1.
+Linux and macOS share the Unix code. The Windows port and its contracts are in `docs/windows.md`; the macOS Keychain is later work.
 
 ---
 
@@ -70,6 +70,39 @@ Errors seen: `400 {"error":"invalid_grant","error_description":"Refresh token no
 
 ---
 
+## atomic.rs — files, modes and private folders
+
+The one way seatswap writes a file, and the only module that knows about file modes. No other module imports `std::os::unix` outside tests.
+
+```rust
+/// Who may read a file seatswap creates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Access { Private /* Unix 0600 */, Shared /* Unix 0644 */ }
+
+/// Temp file in the same folder, write, fsync, rename over `path`, fsync the folder (Unix).
+/// Unix: an existing file keeps its mode, a new one gets the mode of `access_if_new`.
+/// Windows: no modes (a file gets its folder's permissions), no folder fsync (Windows cannot
+/// open a folder as a file), and the rename is retried while it fails with OS error 5 or 32
+/// (another program holds the target open without delete sharing): 10 ms, doubling up to
+/// 200 ms, for at most 2 s, then the last OS error. Any error removes the temp file.
+pub fn write_atomic(path: &Path, bytes: &[u8], access_if_new: Access) -> io::Result<()>;
+
+/// Copy `path` to `<path>.seatswap-backup` (Access::Private) unless that backup exists.
+pub fn backup_once(path: &Path) -> io::Result<bool>;
+
+/// Missing: create with its parents (Unix: mode 0700, set explicitly). Existing folder: left
+/// as it is. Something else in its place: io::ErrorKind::AlreadyExists, "exists but is not a folder".
+pub fn ensure_private_dir(dir: &Path) -> io::Result<()>;
+
+/// Unix: chmod 0700. Windows: nothing to set, Ok(()).
+pub fn restrict_dir(dir: &Path) -> io::Result<()>;
+
+/// Read + write, create when missing, never truncate; a new file is private (Unix: 0600).
+pub fn open_private(path: &Path) -> io::Result<File>;
+```
+
+Every file seatswap writes passes `Access::Private`, except the XDG autostart entry (`Access::Shared`). The data folder (store, usage cache, lock files) is made with `ensure_private_dir`; the fallback secrets folder also gets `restrict_dir`.
+
 ## locks.rs (§2.6, §6.2)
 
 Claude Code's locks are folders made with `mkdir`. The holder keeps the folder's modification time fresh; others treat a lock older than its limit as abandoned.
@@ -110,7 +143,8 @@ pub fn acquire_claude_locks(paths: &ClaudePaths, timeout: Duration) -> Result<Cl
 pub fn claude_locks_busy(paths: &ClaudePaths) -> bool;
 
 /// seatswap's own exclusive lock on <data_dir>/switch.lock (fs4 file lock, the file
-/// is created if missing, the data folder too). Poll try_lock until timeout, then Busy.
+/// is created if missing with atomic::open_private, the data folder too with
+/// atomic::ensure_private_dir). Poll try_lock until timeout, then Busy.
 pub struct AppLock { /* File */ }
 pub fn acquire_app_lock(app: &AppPaths, timeout: Duration) -> Result<AppLock, LockError>;
 ```
@@ -138,7 +172,7 @@ pub fn read_login(paths: &ClaudePaths) -> Result<Option<Login>, LiveError>;
 /// Replace the login in .credentials.json: read the whole file (missing → empty object),
 /// remove every LOGIN_KEYS key, insert the login's keys (None = log out: only remove),
 /// keep every other key in place and order, write compact JSON without a trailing newline,
-/// via atomic::write_atomic (mode 0600 if new). Call atomic::backup_once first.
+/// via atomic::write_atomic (Access::Private if new). Call atomic::backup_once first.
 pub fn write_login(paths: &ClaudePaths, login: Option<&Login>) -> Result<(), LiveError>;
 
 /// oauthAccount of .claude.json. Ok(None) when the file or the key is missing.
@@ -566,7 +600,7 @@ Drawing (tiny-skia, anti-aliased): transparent background; ring of width max(2, 
 
 ## app: GUI (§8, §9, §11) — wave 3, `gui` feature
 
-Files: `crates/app/src/gui/{mod.rs, worker.rs, tray.rs, panel.rs, notify.rs, autostart.rs, ipc.rs}`, `crates/app/ui/{index.html, panel.css, panel.js}`, `crates/app/capabilities/default.json`. `main.rs`: no subcommand → `gui::run(app: AppPaths, claude_override: Option<PathBuf>, data_override: Option<PathBuf>) -> ExitCode` (the same path resolution as the CLI, one function; the overrides are passed on so `seatswap panel` and autostart start the app with the same flags). Actions both front ends must take the same way live in `crates/app/src/ops.rs`: `save_live_login(claude, store, label, now) -> Result<Account, String>` (a missing, ended or unknown login saved nothing and is an error), `switch_message(store, account_id) -> Result<String, String>` ("Switched to AC — Acme"; an unreadable store or unknown id is an error, never the raw id) and `switched_without_list(error) -> String`.
+Files: `crates/app/src/gui/{mod.rs, worker.rs, tray.rs, panel.rs, notify.rs, autostart.rs, ipc.rs, registry.rs}` (`registry.rs` on Windows only), `crates/app/ui/{index.html, panel.css, panel.js}`, `crates/app/capabilities/default.json`. The code is the library `seatswap` (`src/lib.rs`, `pub fn run() -> ExitCode`); two programs call it: `seatswap` (`src/main.rs`) and `seatswap-tray` (`src/bin/seatswap-tray.rs`, built without a console window on Windows for autostart and the Start menu; Linux builds it but does not install it). No subcommand → `gui::run(app: AppPaths, claude_override: Option<PathBuf>, data_override: Option<PathBuf>) -> ExitCode` (the same path resolution as the CLI, one function; the overrides are passed on so `seatswap panel` and autostart start the app with the same flags). Actions both front ends must take the same way live in `crates/app/src/ops.rs`: `save_live_login(claude, store, label, now) -> Result<Account, String>` (a missing, ended or unknown login saved nothing and is an error), `switch_message(store, account_id) -> Result<String, String>` ("Switched to AC — Acme"; an unreadable store or unknown id is an error, never the raw id) and `switched_without_list(error) -> String`.
 
 **Threads.**
 - *Main thread:* Tauri event loop, tray, menu, panel window.
@@ -600,10 +634,10 @@ Event `navigate` (payload `"main"|"add"|"settings"`) when the panel is shown for
 
 **Panel** (`panel.rs`): one window label `panel`, created on first open (`index.html#<view>`), kept and hidden afterwards. 380 px wide, height from `fit_panel`, no decorations, always on top, skip taskbar. Placement §9.2: X11 at the mouse, inside the monitor that holds it, above the mouse when the mouse is in the lower half, else below; Wayland (`XDG_SESSION_TYPE=wayland`) centred. `show` takes an `Anchor { cursor, monitor, scale }` once per opening and keeps it with the last requested logical height in `GuiState.panel: Mutex<Placement>`; `fit_panel` resizes and re-places from that anchor (`anchored_position(anchor, height, wayland)` → `place_panel`), so the panel keeps its bottom edge above the mouse, its top edge below it, and stays inside the monitor. Never read the window's position or size back to place it: on X11 they report the old values until the window system has applied a change (the headless run of 2026-11-10 drifted the panel to y = 836 and y = −386 that way). The window is built `resizable(true)`: GTK ignores `set_size` on a non-resizable window. Closes on Esc and the header's × (panel.js → `hide_panel`), on focus loss, and on a left click on the tray icon while open (`panel::toggle`, decision in the pure `tray_click(visible, focus_hidden_ago)`; a click within `REOPEN_GUARD` = 400 ms after a focus-loss hide is the click that caused it and does not reopen). Focus loss hides only if the panel is still unfocused `FOCUS_RECHECK` = 150 ms later and no pop-up of the process holds a GTK grab (`own_popup_open` → `gtk::grab_get_current`): WebKitGTK shows a `<select>` list as its own window with a grab, so the panel is unfocused for as long as the list is open; the list closes on the next click outside and hands the focus back. Focus on X11 (`take_focus`, `focus_x11`): `present_with_time` + `gdk_window.focus` with the X server's current time (`gdkx11::x11_get_server_time`) — Cinnamon's window manager refuses `set_focus`, which asks without a timestamp; and on every map the request is repeated up to `FOCUS_RETRIES` = 5 times, `FOCUS_RETRY_GAP` = 80 ms apart, until the window is active, because a freshly mapped window is not yet managed and the first request is ignored (both seen on Cinnamon 2026-11-10). Built hidden at startup (`panel::preload` in `setup`) so the page has loaded and measured itself before the first opening. A hidden panel does not appear when `show` is called: `show` stores the anchor, sets `PanelState.pending_show` and sends `navigate`; the page answers every navigation with `fit_panel` (setView), and that call sizes, places and only then shows it (`reveal`: move, then `show`), so the window manager maps it once, at its final size and place. If no height arrives within `SHOW_DEADLINE` = 300 ms it appears anyway with a log line. On Linux, nothing may map the window before the move is applied (`present_with_time` maps through GTK at once, and the panel flashed at its old place); focus is asked from the map handler instead. `.panel` has `flex-shrink: 0`: before the first showing the viewport has no width and a shrinking panel measured 2698 px tall. Opening it sends `Poll(PanelOpened)`.
 
-**Notifications** (`notify.rs`, notify-rust): after a switch when `notifyOnSwitch` ("Switched to P — Private"); the switch suggestion (§7.4) once per account and reset window, with a "Switch" action (`wait_for_response` on its own thread; click on the body opens the panel); login warnings once per account and level per run; an unknown live login once per identity per run ("New login found: <email>. Save it as an account?" → a click on its button or body opens the add view). What counts as a click is decided in one pure function, `click(response, button)`: the offered button (`NotificationResponse::Action`) or the body (`Default`); a notification that timed out, was dismissed or closed (`Closed`) does nothing. On Linux the body click only arrives when the notification announces the action `default` (`clickable()`); the notification service shows no button for it.
+**Notifications** (`notify.rs`, notify-rust): every notification is built from `base()` (summary "seatswap"; on Windows `.app_id("dev.seatswap.app")`), the only caller of `Notification::new()`. On Windows `register_app_id()` writes the display name "seatswap" under `HKCU\Software\Classes\AppUserModelId\dev.seatswap.app` once at startup, before the single-instance listener; a failure is a startup error `notification name: …`. After a switch when `notifyOnSwitch` ("Switched to P — Private"); the switch suggestion (§7.4) once per account and reset window, with a "Switch" action (`wait_for_response` on its own thread; click on the body opens the panel); login warnings once per account and level per run; an unknown live login once per identity per run ("New login found: <email>. Save it as an account?" → a click on its button or body opens the add view). What counts as a click is decided in one pure function, `click(response, button)`: the offered button (`NotificationResponse::Action`) or the body (`Default`); a notification that timed out, was dismissed or closed (`Closed`) does nothing. On Linux the body click only arrives when the notification announces the action `default` (`clickable()`); the notification service shows no button for it. Windows reports a body click by itself, so `default` is announced on Linux only.
 
-**Single instance and `seatswap panel`** (`ipc.rs`): the tray app takes `acquire_file_lock(gui_lock, 0)`. Busy → another instance runs: send `open-panel main` to `gui_socket` and exit 0. Held → name the socket only now (the lock created the data folder on first start, and the name needs its real path), remove a leftover socket, listen on it (mode 0600); one line per connection: `open-panel <view>` → `ok`, anything else → `error unknown command`.
+**Single instance and `seatswap panel`** (`ipc.rs`): the tray app takes `acquire_file_lock(gui_lock, 0)`. Busy → another instance runs: send `open-panel main` to `gui_socket` and exit 0. Held → name the socket only now (the lock created the data folder on first start, and the name needs its real path), remove a leftover socket, listen on it (mode 0600 on Unix; on Windows the file has the data folder's permissions). Windows uses the same Unix socket through `uds_windows` (`std::os::windows::net` is not stable yet); there is no runtime folder, so the socket is `<data>\gui.sock`. One line per connection: `open-panel <view>` → `ok`, anything else → `error unknown command`.
 
-**Autostart** (`autostart.rs`): at start and on `save_settings`, `startAtLogin` on → write `autostart_file($XDG_CONFIG_HOME or ~/.config)` with `Exec=<current_exe>` via `write_atomic`; off → remove it if present.
+**Autostart** (`autostart.rs`, one entry point `apply_autostart(enabled, arguments)`): at start and on `save_settings`. Linux: `startAtLogin` on → write `autostart_file($XDG_CONFIG_HOME or ~/.config)` with `Exec=<current_exe>` via `write_atomic` (`Access::Shared`); off → remove it if present. Windows: on → the string value `seatswap` under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` = `"<folder of current_exe>\seatswap-tray.exe" "<arg>" …` (each part in double quotes, `"` written `\"`, a run of backslashes before a `"` or at the end doubled); a missing `seatswap-tray.exe` (`NoTrayProgram`), a path that is not valid Unicode (`NotUnicode`) or a command over 260 UTF-16 units (`CommandTooLong`) is an error, never shortened; off → delete the value (missing is fine). `gui/registry.rs` (Windows only) is the one module that names `winreg`: `set_string`, `get_string` (tests only), `delete_value`, all under `HKEY_CURRENT_USER`.
 
 **Panel UI** (`ui/`, plain HTML/CSS/JS, no build step, `window.__TAURI__` with `app.withGlobalTauri: true`): §11.1–11.3. Views `main`, `add` (the §6.1 steps; shows the unknown live login with a label field and "Save" when there is one), `settings` (every §10 setting). Every time on the page (reset countdowns, the suggestion's clock time, the header's poll age, a card's "usage 5 min ago") is an element with `data-time` + `data-time-style` whose text comes from the command `time_texts([{at, style}]) → [text]` (`countdown` → `format_reset_at`, `clock` → `format_reset_clock`, `age` → `format_age`), asked after each render and every second, so the page has no copy of these rules. Without `window.__TAURI__` it runs on a built-in fixture snapshot so it can be opened in a browser; there `time_texts` answers with stand-ins (the plain clock time, "a moment ago").

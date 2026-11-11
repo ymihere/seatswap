@@ -636,6 +636,7 @@ mod tests {
 
     use std::collections::BTreeMap;
     use std::fs;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
     use std::sync::mpsc;
@@ -734,12 +735,16 @@ mod tests {
         .unwrap()
     }
 
+    /// Write `bytes`; on Unix also set mode 0600, as Claude Code does.
     fn write_private(path: &Path, bytes: &[u8]) {
         fs::write(path, bytes).unwrap();
+        #[cfg(unix)]
         fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
     }
 
     struct World {
+        // Read only by the Unix-only tests; elsewhere it keeps the folder alive.
+        #[cfg_attr(not(unix), allow(dead_code))]
         tmp: tempfile::TempDir,
         paths: ClaudePaths,
         app: crate::paths::AppPaths,
@@ -851,10 +856,13 @@ mod tests {
         }
     }
 
+    /// Used only by a test that needs chmod to force its failure.
+    #[cfg(unix)]
     struct FailingDeleteSecrets {
         inner: FileSecrets,
     }
 
+    #[cfg(unix)]
     impl crate::store::SecretStore for FailingDeleteSecrets {
         fn get(&self, id: &str) -> Result<Option<Login>, StoreError> {
             self.inner.get(id)
@@ -1167,6 +1175,8 @@ mod tests {
     }
 
     #[test]
+    // Forces the failure by making a folder unwritable with chmod.
+    #[cfg(unix)]
     fn a_failed_identity_write_rolls_the_live_login_back() {
         let mut w = World::new();
         // Keep the login keys last, as Claude Code writes them, so restoring the
@@ -1220,6 +1230,8 @@ mod tests {
     }
 
     #[test]
+    // Forces the failure by making a folder unwritable with chmod.
+    #[cfg(unix)]
     fn a_rolled_back_save_switch_removes_the_new_accounts_secret() {
         let mut w = World::new();
         w.set_live(&w.c_login, &w.c_identity);
@@ -1269,6 +1281,8 @@ mod tests {
     }
 
     #[test]
+    // Forces the failure by making a folder unwritable with chmod.
+    #[cfg(unix)]
     fn a_rolled_back_save_switch_reports_a_failed_secret_delete() {
         let w = World::new();
         w.set_live(&w.c_login, &w.c_identity);

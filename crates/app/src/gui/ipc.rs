@@ -8,10 +8,11 @@
 #[cfg(feature = "gui")]
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
-#[cfg(feature = "gui")]
+#[cfg(all(unix, feature = "gui"))]
 use std::os::unix::fs::PermissionsExt;
-#[cfg(feature = "gui")]
+#[cfg(all(unix, feature = "gui"))]
 use std::os::unix::net::UnixListener;
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 #[cfg(feature = "gui")]
@@ -21,6 +22,13 @@ use std::sync::Arc;
 #[cfg(feature = "gui")]
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
+
+// The same Unix socket on Windows; `uds_windows` until std::os::windows::net is
+// stable (rust-lang/rust#150487).
+#[cfg(all(windows, feature = "gui"))]
+use uds_windows::UnixListener;
+#[cfg(windows)]
+use uds_windows::UnixStream;
 
 #[cfg(feature = "gui")]
 use seatswap_core::locks::{self, FileLock, LockError};
@@ -159,6 +167,8 @@ impl Listener {
             path: socket.clone(),
             source,
         })?;
+        // Windows has no modes: the socket file has the data folder's permissions.
+        #[cfg(unix)]
         fs::set_permissions(&socket, fs::Permissions::from_mode(0o600)).map_err(|source| {
             IpcError::Io {
                 path: socket.clone(),
@@ -404,6 +414,33 @@ mod tests {
         let spelled = AppPaths::at(&tmp.path().join("run/../data/"));
         let socket = spelled.gui_socket(Some(&runtime)).expect("socket path");
         assert_eq!(ask(&socket, "open-panel main\n"), "ok\n");
+    }
+
+    /// A socket file left behind by a crash does not stop the next start, and
+    /// `seatswap panel` reaches the new listener.
+    #[cfg(feature = "gui")]
+    #[test]
+    fn a_leftover_socket_file_does_not_stop_the_start() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let app = app(&tmp);
+        fs::create_dir(&app.data_dir).expect("data folder");
+        let socket = app.gui_socket(None).expect("socket path");
+        drop(UnixListener::bind(&socket).expect("a crashed app's socket"));
+        assert!(
+            socket.exists(),
+            "dropping a listener leaves its socket file"
+        );
+
+        let (opened, received) = mpsc::channel();
+        let _listener = Listener::start_in(&app, None, move |view| {
+            let _ = opened.send(view.to_string());
+        })
+        .expect("listener despite the leftover socket");
+        send_open_panel_at(&socket, "settings").expect("the new listener answers");
+        assert_eq!(
+            received.recv_timeout(Duration::from_secs(2)).as_deref(),
+            Ok("settings")
+        );
     }
 
     #[test]

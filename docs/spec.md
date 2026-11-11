@@ -53,7 +53,7 @@ The endpoints are undocumented and belong to Claude Code's own login. Anthropic 
 
 ### 2.1 Linux and Windows: `~/.claude/.credentials.json`
 
-On Windows the file is `%USERPROFILE%\.claude\.credentials.json`. It is plain JSON with mode `0600`. Top-level keys:
+On Windows the file is `%USERPROFILE%\.claude\.credentials.json`. It is plain JSON, mode `0600` on Linux; on Windows it has the permissions it inherits from the profile folder (there are no mode bits). Top-level keys:
 
 | Key | What it is | On a switch |
 |---|---|---|
@@ -486,7 +486,7 @@ They give real click handling and exact placement on those desktops. They're not
 
 - **Linux:** `.deb`, `.rpm`, AppImage, and an AUR `PKGBUILD`. Autostart through `~/.config/autostart/seatswap.desktop`.
 - **macOS:** signed `.dmg` plus a Homebrew cask. Login item via `SMAppService`.
-- **Windows:** MSI or NSIS installer plus a winget manifest. Autostart through the Run registry key.
+- **Windows:** two programs from one code base: `seatswap.exe` (terminal, CLI) and `seatswap-tray.exe` (the same program built without a console window, for autostart and the Start menu). The first release is a zip with both; an MSI or NSIS installer and a winget manifest come later. Autostart through the value `seatswap` under `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run`, which starts `seatswap-tray.exe` with the same `--data-dir` / `--claude-config-dir` flags.
 - **CLI only:** `cargo install seatswap --no-default-features`.
 
 ---
@@ -504,7 +504,7 @@ They give real click handling and exact placement on those desktops. They're not
 | `mirrorLive` | on | §6.4 |
 | `refreshInactive` | on | refresh the logins of inactive accounts (§6.3). Off: inactive accounts show their last known usage with its age |
 | `hotkey` | Ctrl+Alt+C | Linux v1: not used; bind `seatswap panel` in the desktop instead (§8.3) |
-| `startAtLogin` | on | |
+| `startAtLogin` | on | Linux: `~/.config/autostart/seatswap.desktop`; Windows: the `Run` key value `seatswap` → `seatswap-tray.exe` (§9.4) |
 | `theme` | system | system · light · dark |
 | `claudeConfigDir` | `$CLAUDE_CONFIG_DIR` or `~/.claude` | |
 
@@ -600,7 +600,7 @@ Run on 2026-11-10 with two real accounts in a separate config folder. Evidence a
 | 4 | Organization caches | **Done** for Team ↔ personal: Claude Code handles them (§2.4). Open: two Team or Enterprise organizations. |
 | 5 | Usage endpoint | **Partly.** Works with a refreshed login; a limit can be missing (§3). Open: which scope it needs, its rate limit, the values `severity` takes near and at 100 %. |
 | 6 | macOS | Open: the Keychain names from §2.2, and whether updating the item in place keeps Claude Code's access to it without a new password prompt. |
-| 7 | Windows | Open: the location and format of `.credentials.json`. |
+| 7 | Windows | **Done** (checked 2026-11-11, Claude Code 2.1.322 on Windows 11): `%USERPROFILE%\.claude\.credentials.json` and `%USERPROFILE%\.claude.json`, the same keys and format as on Linux; nothing in Windows Credential Manager; the same lock folders. Port: `docs/windows.md`. |
 | 8 | Tauri tray on Cinnamon | **Done** with the `ksni` backend: the icon updates live, left click opens the pop-up at the mouse, right click shows the menu, the tooltip shows. The label next to the icon does not show (§8.1). Open: whether an open menu refreshes its text. |
 | 9 | Sessions inside VS Code | Expected to follow a switch like a terminal session (experience from daily use, §6.5). Test postponed until no work sessions are running. |
 

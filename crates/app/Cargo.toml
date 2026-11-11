@@ -11,9 +11,21 @@ readme = "../../README.md"
 keywords = ["claude", "claude-code", "tray", "accounts", "switcher"]
 categories = ["command-line-utilities", "gui"]
 
+# One library, two programs (docs/windows.md §6.1): `seatswap-tray` is the same
+# program built without a console window on Windows, for autostart and the
+# Start menu. Linux builds it too but does not install or release it.
+[lib]
+name = "seatswap"
+path = "src/lib.rs"
+
 [[bin]]
 name = "seatswap"
 path = "src/main.rs"
+
+[[bin]]
+name = "seatswap-tray"
+path = "src/bin/seatswap-tray.rs"
+required-features = ["gui"]
 
 [features]
 default = ["gui"]

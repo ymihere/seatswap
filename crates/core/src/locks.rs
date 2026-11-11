@@ -5,9 +5,8 @@
 //! This module does the same, plus an advisory file lock that keeps two
 //! seatswap processes apart.
 
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
@@ -16,6 +15,7 @@ use std::time::{Duration, Instant};
 use filetime::FileTime;
 use fs4::fs_std::FileExt;
 
+use crate::atomic;
 use crate::paths::{AppPaths, ClaudePaths};
 
 /// How often a held lock folder's mtime is set to now.
@@ -252,19 +252,15 @@ pub fn acquire_file_lock(path: &Path, timeout: Duration) -> Result<FileLock, Loc
     // A lock file in a folder that does not exist yet (the GUI's data folder on
     // first start) needs its folder, like the app lock always did.
     if let Some(dir) = path.parent().filter(|dir| !dir.as_os_str().is_empty()) {
-        ensure_data_dir(dir)?;
-    }
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .open(path)
-        .map_err(|source| LockError::Io {
-            path: path.to_path_buf(),
+        atomic::ensure_private_dir(dir).map_err(|source| LockError::Io {
+            path: dir.to_path_buf(),
             source,
         })?;
+    }
+    let file = atomic::open_private(path).map_err(|source| LockError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
     let deadline = Instant::now() + timeout;
     loop {
         match file.try_lock_exclusive() {
@@ -293,44 +289,10 @@ pub fn acquire_app_lock(app: &AppPaths, timeout: Duration) -> Result<FileLock, L
     acquire_file_lock(&app.switch_lock(), timeout)
 }
 
-/// Create the data folder with mode 0700 when it does not exist (and leave an
-/// existing one's mode alone).
-fn ensure_data_dir(dir: &Path) -> Result<(), LockError> {
-    match fs::metadata(dir) {
-        Ok(metadata) if metadata.is_dir() => return Ok(()),
-        Ok(_) => {
-            return Err(LockError::Io {
-                path: dir.to_path_buf(),
-                source: io::Error::new(io::ErrorKind::AlreadyExists, "not a folder"),
-            });
-        }
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(source) => {
-            return Err(LockError::Io {
-                path: dir.to_path_buf(),
-                source,
-            })
-        }
-    }
-    fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(dir)
-        .map_err(|source| LockError::Io {
-            path: dir.to_path_buf(),
-            source,
-        })?;
-    // DirBuilder's mode is filtered by the umask; the data folder holds secrets
-    // when the keyring is unavailable, so set it explicitly.
-    fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).map_err(|source| LockError::Io {
-        path: dir.to_path_buf(),
-        source,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::time::SystemTime;
 
@@ -513,6 +475,7 @@ mod tests {
         let path = tmp.path().join("data").join("gui.lock");
         let first = acquire_file_lock(&path, Duration::ZERO).unwrap();
         assert!(path.is_file());
+        #[cfg(unix)]
         assert_eq!(
             fs::metadata(path.parent().unwrap())
                 .unwrap()
@@ -555,6 +518,7 @@ mod tests {
         let app = AppPaths::at(&tmp.path().join("data"));
         let first = acquire_app_lock(&app, Duration::from_secs(1)).unwrap();
         assert!(app.switch_lock().is_file());
+        #[cfg(unix)]
         assert_eq!(
             fs::metadata(&app.data_dir).unwrap().permissions().mode() & 0o777,
             0o700

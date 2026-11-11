@@ -3,7 +3,6 @@
 //! Every path the program uses comes from here; no other module builds one.
 
 use std::ffi::OsString;
-use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 /// The `sun_path` size of a Unix socket address, including the trailing NUL.
@@ -11,7 +10,7 @@ const SOCKADDR_UN_LIMIT: usize = 108;
 
 #[derive(Debug, thiserror::Error)]
 pub enum PathsError {
-    #[error("cannot find the home folder (HOME is not set)")]
+    #[error("cannot find the home folder")]
     NoHome,
     #[error("cannot find the user config folder for seatswap")]
     NoConfigDir,
@@ -171,11 +170,11 @@ impl AppPaths {
                         source,
                     }
                 })?;
-                let hash = fnv1a64(real.as_os_str().as_bytes());
+                let hash = fnv1a64(real.as_os_str().as_encoded_bytes());
                 dir.join(format!("seatswap-{hash:016x}.sock"))
             }
         };
-        if path.as_os_str().as_bytes().len() >= SOCKADDR_UN_LIMIT {
+        if path.as_os_str().as_encoded_bytes().len() >= SOCKADDR_UN_LIMIT {
             return Err(PathsError::SocketPathTooLong { path });
         }
         Ok(path)
@@ -296,7 +295,7 @@ mod tests {
 
         let socket = AppPaths::at(&data).gui_socket(Some(runtime)).unwrap();
         let real = std::fs::canonicalize(&data).unwrap();
-        let hash = fnv1a64(real.as_os_str().as_bytes());
+        let hash = fnv1a64(real.as_os_str().as_encoded_bytes());
         assert_eq!(
             socket,
             runtime.join(format!("seatswap-{hash:016x}.sock")),
@@ -315,6 +314,7 @@ mod tests {
     /// link, and the absolute path all name one socket; otherwise `seatswap
     /// panel` and a second start could not find the running tray app.
     #[test]
+    #[cfg(unix)]
     fn every_spelling_of_the_data_folder_gives_one_socket() {
         let tmp = tempfile::tempdir().unwrap();
         let data = tmp.path().join("seatswap");
@@ -354,7 +354,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let app = AppPaths::at(tmp.path());
         let runtime = PathBuf::from(format!("/tmp/{}", "d".repeat(115)));
-        assert_eq!(runtime.as_os_str().as_bytes().len(), 120);
+        assert_eq!(runtime.as_os_str().as_encoded_bytes().len(), 120);
 
         match app.gui_socket(Some(&runtime)) {
             Err(PathsError::SocketPathTooLong { path }) => {
@@ -371,13 +371,13 @@ mod tests {
             absolute(Path::new("relative/data")).unwrap(),
             cwd.join("relative/data")
         );
-        assert_eq!(
-            absolute(Path::new("/home/u/.config/seatswap")).unwrap(),
-            Path::new("/home/u/.config/seatswap")
-        );
+        let already_absolute = std::env::temp_dir().join("seatswap");
+        assert!(already_absolute.is_absolute());
+        assert_eq!(absolute(&already_absolute).unwrap(), already_absolute);
     }
 
     #[test]
+    #[cfg(unix)]
     fn legacy_lock_uses_the_real_path() {
         let tmp = tempfile::tempdir().unwrap();
         let real = tmp.path().join("real");
@@ -387,5 +387,27 @@ mod tests {
         let p = ClaudePaths::for_config_dir(&link, Path::new("/nowhere"));
         let expect = append_to_file_name(&std::fs::canonicalize(&real).unwrap(), ".lock");
         assert_eq!(p.legacy_refresh_lock(), expect);
+    }
+
+    /// `canonicalize` gives `\\?\C:\…` on Windows; the lock folder it names is
+    /// the one Claude Code names from the plain path.
+    #[test]
+    #[cfg(windows)]
+    fn legacy_lock_names_the_same_folder_as_the_plain_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = tmp.path().join("cfg");
+        std::fs::create_dir(&config).unwrap();
+        let p = ClaudePaths::for_config_dir(&config, tmp.path());
+        let legacy = p.legacy_refresh_lock();
+        assert!(
+            legacy.as_os_str().to_string_lossy().starts_with(r"\\?\"),
+            "expected a verbatim path, got {}",
+            legacy.display()
+        );
+        std::fs::create_dir(&legacy).unwrap();
+        let plain = append_to_file_name(&config, ".lock");
+        assert!(!plain.as_os_str().to_string_lossy().starts_with(r"\\?\"));
+        let err = std::fs::create_dir(&plain).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
     }
 }

@@ -17,6 +17,8 @@ pub(crate) mod notify;
 #[cfg(feature = "gui")]
 pub(crate) mod panel;
 #[cfg(feature = "gui")]
+pub(crate) mod registry;
+#[cfg(feature = "gui")]
 pub(crate) mod tray;
 #[cfg(feature = "gui")]
 pub(crate) mod worker;
@@ -196,6 +198,12 @@ fn setup(
     let mut startup_errors = Vec::new();
     if let Some(error) = settings_error {
         startup_errors.push(accounts_error(&error, &claude));
+    }
+
+    // Before the listener, the first place that can send a notification.
+    #[cfg(windows)]
+    if let Err(error) = notify::register_app_id() {
+        startup_errors.push(format!("notification name: {error}"));
     }
 
     // Single instance: a held `gui.lock` takes the socket; a busy one sends

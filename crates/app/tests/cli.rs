@@ -1,14 +1,24 @@
 //! Integration tests for the `seatswap` command line. Every test uses a
 //! fake Claude Code config folder and a fake data folder; `HOME` points into the
 //! same temporary folder so the binary can never see the real home.
+//!
+//! On Windows `HOME` protects nothing: the home folder comes from Windows, not
+//! from the variable (docs/windows.md rule 2.3). There the tests stay away from
+//! the real files only because every command passes `--data-dir` and
+//! `--claude-config-dir` and `accounts.json` records the file secret backend.
+//! Keep it that way in every new test.
 
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+#[cfg(unix)]
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::thread;
+#[cfg(windows)]
+use uds_windows::UnixListener;
 
 use serde_json::{json, Value};
 
@@ -200,8 +210,10 @@ impl Fixture {
     }
 }
 
+/// Write `bytes`; on Unix also set mode 0600, as Claude Code does.
 fn write_private(path: &Path, bytes: &[u8]) {
     fs::write(path, bytes).expect("write fake Claude Code file");
+    #[cfg(unix)]
     fs::set_permissions(path, fs::Permissions::from_mode(0o600)).expect("mode 0600");
 }
 

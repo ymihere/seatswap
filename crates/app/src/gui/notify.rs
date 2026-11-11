@@ -16,6 +16,8 @@ use seatswap_core::engine::{LoginWarning, Suggestion};
 use seatswap_core::switcher::UnsavedPolicy;
 
 use super::format;
+#[cfg(windows)]
+use super::registry;
 use super::worker::{LiveView, Snapshot};
 
 /// What the de-duplicator decided to show.
@@ -126,23 +128,40 @@ fn notify_in_background(job: impl FnOnce() + Send + 'static) {
     }
 }
 
+/// Every notification starts here: the summary, and on Windows the app id it
+/// is shown under. The only place that calls `DesktopNotification::new()`.
+fn base() -> DesktopNotification {
+    let mut notification = DesktopNotification::new();
+    notification.summary("seatswap");
+    #[cfg(windows)]
+    notification.app_id(registry::APP_ID);
+    notification
+}
+
+/// Give [`registry::APP_ID`] the display name "seatswap", so Windows shows
+/// notifications under that name (Microsoft's way for programs without an
+/// installer). Called once at startup, before the first notification.
+#[cfg(windows)]
+pub(crate) fn register_app_id() -> Result<(), String> {
+    registry::set_string(registry::APP_ID_KEY, "DisplayName", "seatswap").map_err(|error| {
+        format!(
+            "registry HKEY_CURRENT_USER\\{}: {error}",
+            registry::APP_ID_KEY
+        )
+    })
+}
+
 pub(crate) fn send_switch(message: &str) {
     let body = message.to_string();
     notify_in_background(move || {
-        let _ = DesktopNotification::new()
-            .summary("seatswap")
-            .body(&body)
-            .show();
+        let _ = base().body(&body).show();
     });
 }
 
 pub(crate) fn send_error(message: &str) {
     let body = message.to_string();
     notify_in_background(move || {
-        let _ = DesktopNotification::new()
-            .summary("seatswap")
-            .body(&body)
-            .show();
+        let _ = base().body(&body).show();
     });
 }
 
@@ -159,10 +178,7 @@ pub(crate) fn send_login_warning(warning: &LoginWarning, account: &str) {
         }
     };
     notify_in_background(move || {
-        let _ = DesktopNotification::new()
-            .summary("seatswap")
-            .body(&body)
-            .show();
+        let _ = base().body(&body).show();
     });
 }
 
@@ -192,7 +208,7 @@ fn click(response: &NotificationResponse, button: &str) -> Option<Click> {
 /// button for it). Windows reports a body click by itself and would draw a
 /// button for the action, so it is announced on Linux only.
 fn clickable() -> DesktopNotification {
-    let mut notification = DesktopNotification::new();
+    let mut notification = base();
     if cfg!(all(unix, not(target_os = "macos"))) {
         notification.action("default", "Open");
     }
@@ -222,11 +238,7 @@ pub(crate) fn send_suggestion(
     let to_id = suggestion.to_id.clone();
     // Waiting for an action blocks, so it gets its own thread.
     thread::spawn(move || {
-        let shown = clickable()
-            .summary("seatswap")
-            .body(&body)
-            .action("switch", "Switch")
-            .show();
+        let shown = clickable().body(&body).action("switch", "Switch").show();
         let answered = shown.and_then(|handle| {
             handle.wait_for_response(move |response: &NotificationResponse| {
                 match click(response, "switch") {
@@ -258,7 +270,6 @@ pub(crate) fn send_unknown_login(
     let body = format!("New login found: {who}. Save it as an account?");
     thread::spawn(move || {
         let shown = clickable()
-            .summary("seatswap")
             .body(&body)
             .action("open", "Add account…")
             .show();

@@ -285,7 +285,7 @@ mod tests {
         let paths = config_paths(&tmp);
         let (watcher, count, received) = watched(&paths);
 
-        atomic::write_atomic(&paths.credentials_file, b"{}", 0o600).unwrap();
+        atomic::write_atomic(&paths.credentials_file, b"{}", atomic::Access::Private).unwrap();
         expect_one(&received, &count);
         drop(watcher);
     }
@@ -298,7 +298,7 @@ mod tests {
 
         // Claude Code rewrites the file about that often while it starts.
         for _ in 0..20 {
-            atomic::write_atomic(&paths.credentials_file, b"{}", 0o600).unwrap();
+            atomic::write_atomic(&paths.credentials_file, b"{}", atomic::Access::Private).unwrap();
             thread::sleep(Duration::from_millis(50));
         }
         expect_one(&received, &count);
@@ -316,7 +316,7 @@ mod tests {
         );
         let (watcher, count, received) = watched(&paths);
 
-        atomic::write_atomic(&paths.identity_file, b"{}", 0o600).unwrap();
+        atomic::write_atomic(&paths.identity_file, b"{}", atomic::Access::Private).unwrap();
         expect_one(&received, &count);
         drop(watcher);
     }
@@ -327,8 +327,18 @@ mod tests {
         let paths = config_paths(&tmp);
         let (watcher, count, received) = watched(&paths);
 
-        atomic::write_atomic(&paths.config_dir.join("settings.json"), b"{}", 0o600).unwrap();
-        atomic::write_atomic(&paths.config_dir.join("history.jsonl"), b"{}\n", 0o600).unwrap();
+        atomic::write_atomic(
+            &paths.config_dir.join("settings.json"),
+            b"{}",
+            atomic::Access::Private,
+        )
+        .unwrap();
+        atomic::write_atomic(
+            &paths.config_dir.join("history.jsonl"),
+            b"{}\n",
+            atomic::Access::Private,
+        )
+        .unwrap();
         assert!(
             received.recv_timeout(Duration::from_millis(1500)).is_err(),
             "an unrelated file must not call on_change"
@@ -354,7 +364,7 @@ mod tests {
             }
         });
 
-        atomic::write_atomic(&paths.credentials_file, b"{}", 0o600).unwrap();
+        atomic::write_atomic(&paths.credentials_file, b"{}", atomic::Access::Private).unwrap();
         assert!(
             received.recv_timeout(Duration::from_millis(1500)).is_err(),
             "on_change must not run while Claude Code's storage lock is fresh"
@@ -417,7 +427,7 @@ mod tests {
         .unwrap();
         drop(watcher);
 
-        atomic::write_atomic(&paths.credentials_file, b"{}", 0o600).unwrap();
+        atomic::write_atomic(&paths.credentials_file, b"{}", atomic::Access::Private).unwrap();
         assert!(
             received.recv_timeout(Duration::from_millis(1500)).is_err(),
             "no callback may run after the watcher is dropped"

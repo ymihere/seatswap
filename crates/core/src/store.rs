@@ -7,13 +7,12 @@
 use std::collections::HashSet;
 use std::fs;
 use std::io;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::atomic::write_atomic;
+use crate::atomic::{self, write_atomic, Access};
 use crate::paths::AppPaths;
 use crate::types::{Login, OAuthAccount};
 
@@ -412,9 +411,8 @@ impl FileSecrets {
     }
 
     fn ensure_dir(&self) -> Result<(), StoreError> {
-        ensure_dir_0700(&self.dir)?;
-        fs::set_permissions(&self.dir, fs::Permissions::from_mode(0o700))
-            .map_err(|e| io_error(&self.dir, e))
+        atomic::ensure_private_dir(&self.dir).map_err(|e| io_error(&self.dir, e))?;
+        atomic::restrict_dir(&self.dir).map_err(|e| io_error(&self.dir, e))
     }
 }
 
@@ -438,7 +436,7 @@ impl SecretStore for FileSecrets {
             path: path.clone(),
             source: io::Error::new(io::ErrorKind::InvalidData, e),
         })?;
-        write_atomic(&path, &bytes, 0o600).map_err(|e| io_error(&path, e))
+        write_atomic(&path, &bytes, Access::Private).map_err(|e| io_error(&path, e))
     }
 
     fn delete(&self, id: &str) -> Result<(), StoreError> {
@@ -562,12 +560,13 @@ impl Store {
         if file.version != ACCOUNTS_VERSION {
             return Err(StoreError::UnsupportedVersion(file.version));
         }
-        ensure_dir_0700(&self.app.data_dir)?;
+        atomic::ensure_private_dir(&self.app.data_dir)
+            .map_err(|e| io_error(&self.app.data_dir, e))?;
         let bytes = serde_json::to_vec_pretty(file).map_err(|e| StoreError::Io {
             path: path.clone(),
             source: io::Error::new(io::ErrorKind::InvalidData, e),
         })?;
-        write_atomic(&path, &bytes, 0o600).map_err(|e| io_error(&path, e))
+        write_atomic(&path, &bytes, Access::Private).map_err(|e| io_error(&path, e))
     }
 }
 
@@ -857,22 +856,6 @@ fn pick_color(file: &AccountsFile) -> String {
     PALETTE[best].to_string()
 }
 
-pub(crate) fn ensure_dir_0700(path: &Path) -> Result<(), StoreError> {
-    match fs::metadata(path) {
-        Ok(meta) if meta.is_dir() => Ok(()),
-        Ok(_) => Err(io_error(
-            path,
-            io::Error::new(io::ErrorKind::AlreadyExists, "exists but is not a folder"),
-        )),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            fs::create_dir_all(path).map_err(|e| io_error(path, e))?;
-            fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-                .map_err(|e| io_error(path, e))
-        }
-        Err(e) => Err(io_error(path, e)),
-    }
-}
-
 fn io_error(path: &Path, source: io::Error) -> StoreError {
     StoreError::Io {
         path: path.to_path_buf(),
@@ -884,6 +867,8 @@ fn io_error(path: &Path, source: io::Error) -> StoreError {
 mod tests {
     use super::*;
     use serde_json::{json, Value};
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
 
     const ONE_ID: &str = "6f1c2a9be0d34c118f2d4e5a6b7c8d9e";
     const TWO_ID: &str = "a92d4c1e8b3f4a5d9e6c7b8a1d2e3f40";
@@ -969,6 +954,7 @@ mod tests {
         Login(map)
     }
 
+    #[cfg(unix)]
     fn mode(path: &Path) -> u32 {
         fs::metadata(path).unwrap().permissions().mode() & 0o777
     }
@@ -1018,9 +1004,12 @@ mod tests {
 
         store.save(&file).unwrap();
 
+        #[cfg(unix)]
         let folder = store.app_paths().data_dir.clone();
         let path = store.app_paths().accounts_file();
+        #[cfg(unix)]
         assert_eq!(mode(&folder), 0o700);
+        #[cfg(unix)]
         assert_eq!(mode(&path), 0o600);
         assert_eq!(file.accounts[0].id.len(), 32);
         assert!(file.accounts[0].id.bytes().all(|b| b.is_ascii_hexdigit()));
@@ -1179,7 +1168,7 @@ mod tests {
         }
 
         let absolute = Settings {
-            claude_config_dir: Some(PathBuf::from("/home/u/.claude")),
+            claude_config_dir: Some(std::env::temp_dir().join(".claude")),
             ..Settings::default()
         };
         assert!(absolute.validate().is_ok());
@@ -1216,7 +1205,9 @@ mod tests {
         secrets.set(ONE_ID, &login).unwrap();
         assert_eq!(secrets.get(ONE_ID).unwrap(), Some(login.clone()));
         let path = dir.join(format!("{ONE_ID}.json"));
+        #[cfg(unix)]
         assert_eq!(mode(&path), 0o600);
+        #[cfg(unix)]
         assert_eq!(mode(&dir), 0o700);
 
         let mut changed = login.clone();

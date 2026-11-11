@@ -24,8 +24,9 @@ see at a glance which one still has room.
 
 ## Status
 
-Early (0.1). Built and used daily on **Linux Mint 22 Cinnamon (X11)**. Windows should work the
-same way (Claude Code keeps its login in the same file there) but nobody has run it yet. macOS is
+Early (0.1). Built and used daily on **Linux Mint 22 Cinnamon (X11)**. On Windows 11 it builds
+and passes its tests (Claude Code keeps its login in the same file there); the first real run of
+the tray app is still pending. macOS is
 not supported yet: Claude Code keeps its login in the Keychain there, and seatswap does not
 read or write that yet.
 
@@ -121,7 +122,8 @@ seatswap panel [main|add|settings]   open the running app's pop-up
 ```
 
 Every command takes `--claude-config-dir DIR` (default: the setting, then `$CLAUDE_CONFIG_DIR`,
-then `~/.claude`) and `--data-dir DIR` (default: `~/.config/seatswap` on Linux).
+then `~/.claude`) and `--data-dir DIR` (default: `~/.config/seatswap` on Linux,
+`%APPDATA%\seatswap` on Windows).
 
 ## What it does with your login
 
@@ -149,7 +151,7 @@ Whether using a subscription login this way is within Anthropic's terms is for y
 | KDE Plasma, Xfce, MATE | Expected to work (StatusNotifierItem) |
 | GNOME | Needs the AppIndicator extension |
 | Wayland sessions | Expected to work; the pop-up is centred, the compositor places it |
-| Windows | Written, never run — help wanted |
+| Windows 11 | Builds and passes its tests; first real run pending. `seatswap.exe` is the CLI, `seatswap-tray.exe` the same program without a console window (autostart, Start menu) |
 | macOS | Not yet: needs Keychain support for Claude Code's login |
 
 ## Development

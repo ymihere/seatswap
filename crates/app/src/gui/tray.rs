@@ -24,6 +24,12 @@ const GREY: [u8; 3] = [0x55, 0x5b, 0x66];
 const ICON_SIZE: u32 = 44;
 /// Tray id used by `update`.
 const TRAY_ID: &str = "seatswap-tray";
+/// The longest tooltip the platform shows in full, in UTF-16 units. Windows
+/// cuts a tray tooltip without notice at 128 units including the closing NUL.
+#[cfg(windows)]
+const TOOLTIP_LIMIT: Option<usize> = Some(127);
+#[cfg(not(windows))]
+const TOOLTIP_LIMIT: Option<usize> = None;
 
 fn active_view(views: &[AccountView]) -> Option<&AccountView> {
     views.iter().find(|view| view.is_active)
@@ -119,6 +125,37 @@ pub(crate) fn menu_text(view: &AccountView, now: DateTime<Utc>) -> String {
         text.push_str(" ✓");
     }
     text
+}
+
+/// `text` if it has at most `max_units` UTF-16 units; otherwise its longest
+/// prefix that, with "…" appended, has at most `max_units` units. Never splits
+/// a character.
+fn fit_tooltip(text: &str, max_units: usize) -> String {
+    if text.encode_utf16().count() <= max_units {
+        return text.to_string();
+    }
+    let budget = max_units.saturating_sub('…'.len_utf16());
+    let mut used = 0;
+    let mut end = 0;
+    for (index, character) in text.char_indices() {
+        used += character.len_utf16();
+        if used > budget {
+            break;
+        }
+        end = index + character.len_utf8();
+    }
+    format!("{}…", &text[..end])
+}
+
+/// The tooltip as handed to the tray: [`tooltip`], cut to [`TOOLTIP_LIMIT`]
+/// where the platform has one, so the cut is visible ("…") and never splits a
+/// character.
+fn tray_tooltip(snapshot: &Snapshot, now: DateTime<Utc>) -> String {
+    let text = tooltip(snapshot, now);
+    match TOOLTIP_LIMIT {
+        Some(max_units) => fit_tooltip(&text, max_units),
+        None => text,
+    }
 }
 
 /// The tooltip of the live account (spec §8.1), or the startup error so it can
@@ -228,7 +265,7 @@ fn build(app: &AppHandle, snapshot: &Snapshot) -> tauri::Result<TrayIcon> {
             snapshot.settings.as_ref(),
             Utc::now(),
         ))
-        .tooltip(tooltip(snapshot, Utc::now()))
+        .tooltip(tray_tooltip(snapshot, Utc::now()))
         .icon(image)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| menu_event(app, event.id().as_ref()))
@@ -255,7 +292,7 @@ pub(crate) fn update(tray: &TrayIcon, snapshot: &Snapshot) {
     if let Err(error) = tray.set_icon(Some(image)) {
         eprintln!("seatswap: tray icon: {error}");
     }
-    if let Err(error) = tray.set_tooltip(Some(tooltip(snapshot, now))) {
+    if let Err(error) = tray.set_tooltip(Some(tray_tooltip(snapshot, now))) {
         eprintln!("seatswap: tray tooltip: {error}");
     }
     let title = tray_text(&snapshot.views, snapshot.settings.as_ref(), now);
@@ -518,6 +555,30 @@ mod tests {
         let logged_out = view("AC", "Acme", false, None, LoginState::LoggedOut);
         let text = menu_text(&logged_out, now);
         assert!(text.contains("logged out"), "{text}");
+    }
+
+    #[test]
+    fn fit_tooltip_keeps_a_text_that_fits() {
+        assert_eq!(fit_tooltip("AS · Acme — 42 %", 127), "AS · Acme — 42 %");
+        let exact = "a".repeat(127);
+        assert_eq!(fit_tooltip(&exact, 127), exact);
+    }
+
+    #[test]
+    fn fit_tooltip_cuts_one_unit_over_and_marks_it() {
+        let text = format!("{}b", "a".repeat(127));
+        let fitted = fit_tooltip(&text, 127);
+        assert_eq!(fitted, format!("{}…", "a".repeat(126)));
+        assert_eq!(fitted.encode_utf16().count(), 127);
+    }
+
+    #[test]
+    fn fit_tooltip_never_splits_a_two_unit_character() {
+        // 125 units, then an emoji of two units across the cut point at 126.
+        let text = format!("{}🔥 and more", "a".repeat(125));
+        let fitted = fit_tooltip(&text, 127);
+        assert_eq!(fitted, format!("{}…", "a".repeat(125)));
+        assert!(fitted.encode_utf16().count() <= 127);
     }
 
     #[test]

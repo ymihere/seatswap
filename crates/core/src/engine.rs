@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::api::{Api, ApiError, Usage};
-use crate::atomic::write_atomic;
+use crate::atomic::{self, write_atomic, Access};
 use crate::live;
 use crate::locks::{self, LockError};
 use crate::paths::{AppPaths, ClaudePaths};
@@ -153,13 +153,17 @@ impl UsageCache {
     /// Write the cache as pretty JSON, mode 0600, through
     /// [`crate::atomic::write_atomic`]; creates the data folder (0700) if needed.
     pub fn save(&self, app: &AppPaths) -> Result<(), EngineError> {
-        crate::store::ensure_dir_0700(&app.data_dir)?;
+        atomic::ensure_private_dir(&app.data_dir).map_err(|source| EngineError::Io {
+            path: app.data_dir.clone(),
+            source,
+        })?;
         let path = app.usage_cache_file();
         let bytes = serde_json::to_vec_pretty(self).map_err(|source| EngineError::Io {
             path: path.clone(),
             source: io::Error::new(io::ErrorKind::InvalidData, source),
         })?;
-        write_atomic(&path, &bytes, 0o600).map_err(|source| EngineError::Io { path, source })
+        write_atomic(&path, &bytes, Access::Private)
+            .map_err(|source| EngineError::Io { path, source })
     }
 
     /// Rename a corrupt cache to `usage-cache.json.corrupt-<UTC yyyymmddThhmmss>`

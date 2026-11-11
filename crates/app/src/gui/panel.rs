@@ -369,7 +369,9 @@ fn focus_x11(gtk_window: &gtk::ApplicationWindow) -> Result<bool, String> {
 /// was just mapped is not yet managed by the window manager, which ignores a
 /// focus request for it (seen on Cinnamon: the first opening never got focus,
 /// every later one did).
+#[cfg(target_os = "linux")]
 const FOCUS_RETRIES: u32 = 5;
+#[cfg(target_os = "linux")]
 const FOCUS_RETRY_GAP: Duration = Duration::from_millis(80);
 
 /// Ask for focus again each time the panel appears on screen, until it has it

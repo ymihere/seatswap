@@ -1,13 +1,6 @@
-//! seatswap binary: CLI subcommands, and the tray app when built with the `gui` feature.
-
-mod cli;
-mod format;
-mod gui;
-mod ops;
-
-#[cfg(feature = "gui")]
-mod icon;
+//! The `seatswap` program: CLI subcommands, and the tray app when built with the
+//! `gui` feature. All code is in the library.
 
 fn main() -> std::process::ExitCode {
-    cli::run()
+    seatswap::run()
 }
