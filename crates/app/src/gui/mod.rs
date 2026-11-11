@@ -280,11 +280,7 @@ fn setup(
         });
     }
 
-    let tray = tray::build(tauri_app.handle(), &initial)?;
-    {
-        let state = tauri_app.state::<GuiState>();
-        *lock(&state.tray) = Some(tray);
-    }
+    tray::start(tauri_app.handle());
 
     // Build the (hidden) panel now, so its page has loaded and sized itself
     // before the first opening; otherwise that opening shows a white window

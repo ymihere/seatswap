@@ -11,10 +11,11 @@ use seatswap_core::store::{IconLimit, LoginState, Settings, TrayText};
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 use super::format;
 use super::worker::{LiveView, Snapshot};
+use super::GuiState;
 use crate::icon::{self, IconSpec};
 
 /// The grey of the unknown ring (`#555b66`).
@@ -146,7 +147,77 @@ pub(crate) fn tooltip(snapshot: &Snapshot, now: DateTime<Utc>) -> String {
 
 /// Build the tray icon. The menu event handler is wired here; clicks and menu
 /// entries call into `gui` for the actual window work.
-pub(crate) fn build(app: &AppHandle, snapshot: &Snapshot) -> tauri::Result<TrayIcon> {
+/// Create the tray icon from the current snapshot. Without a tray to show it
+/// in (on Linux: no StatusNotifierWatcher, because the desktop has no tray
+/// support or its panel starts after seatswap at login), seatswap keeps running
+/// and says so; the pop-up stays reachable with `seatswap panel`, and the icon
+/// is created as soon as a tray appears.
+pub(crate) fn start(app: &AppHandle) {
+    if let Err(error) = try_build(app) {
+        let message = no_tray_message(&error);
+        eprintln!("seatswap: {message}");
+        super::notify::send_error(&message);
+        build_when_a_tray_appears(app);
+    }
+}
+
+fn no_tray_message(error: &str) -> String {
+    format!(
+        "no system tray to show the icon in ({error}). The icon appears as soon as the \
+         desktop's tray runs (on GNOME it needs the AppIndicator extension); until then \
+         `seatswap panel` opens the pop-up"
+    )
+}
+
+fn try_build(app: &AppHandle) -> Result<(), String> {
+    let state = app
+        .try_state::<GuiState>()
+        .ok_or_else(|| "the app state is missing".to_string())?;
+    let snapshot = state.snapshot()?;
+    let tray = build(app, &snapshot).map_err(|error| error.to_string())?;
+    *super::lock(&state.tray) = Some(tray);
+    Ok(())
+}
+
+/// Watch the session bus for the StatusNotifierWatcher and create the icon when
+/// it appears. Once the icon exists, ksni registers it again by itself whenever
+/// the watcher restarts.
+#[cfg(target_os = "linux")]
+fn build_when_a_tray_appears(app: &AppHandle) {
+    use gtk::gio;
+    use std::sync::{Arc, Mutex};
+
+    // Holds the watch id (`gio::bus_watch_name` returns it after the closure exists).
+    let watch = Arc::new(Mutex::new(None));
+    let appeared_watch = Arc::clone(&watch);
+    let app = app.clone();
+    let id = gio::bus_watch_name(
+        gio::BusType::Session,
+        STATUS_NOTIFIER_WATCHER,
+        gio::BusNameWatcherFlags::NONE,
+        move |_, _, _| match try_build(&app) {
+            Ok(()) => {
+                eprintln!("seatswap: a system tray appeared; the icon is shown");
+                if let Some(id) = super::lock(&appeared_watch).take() {
+                    gio::bus_unwatch_name(id);
+                }
+            }
+            Err(error) => eprintln!("seatswap: tray icon: {error}"),
+        },
+        |_, _| {},
+    );
+    *super::lock(&watch) = Some(id);
+}
+
+/// Elsewhere the tray is part of the system; there is nothing to wait for.
+#[cfg(not(target_os = "linux"))]
+fn build_when_a_tray_appears(_app: &AppHandle) {}
+
+/// The D-Bus name of the tray host registry on Linux (StatusNotifierItem spec).
+#[cfg(target_os = "linux")]
+const STATUS_NOTIFIER_WATCHER: &str = "org.kde.StatusNotifierWatcher";
+
+fn build(app: &AppHandle, snapshot: &Snapshot) -> tauri::Result<TrayIcon> {
     let menu = build_menu(app, snapshot)?;
     let spec = icon_spec(&snapshot.views, snapshot.settings.as_ref());
     let image = Image::new_owned(icon::render(&spec, ICON_SIZE), ICON_SIZE, ICON_SIZE);
