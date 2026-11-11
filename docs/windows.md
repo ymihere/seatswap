@@ -1,5 +1,7 @@
 # seatswap — Windows port (spec for the implementer)
 
+**Status: implemented on 2026-11-11** (commit "Windows support"). This file stays as the record of the contracts and of what was checked; what happened after it was written is in section 13.
+
 Written 2026-11-11, after an investigation on a Windows 11 machine. Read `AGENTS.md` first; its hard rules apply to every line of this work. `docs/spec.md` says what the program does, `docs/implementation.md` fixes the existing module contracts. This file adds the contracts for Windows. Signatures here are binding; bodies are free.
 
 ## 1. Goal
@@ -14,7 +16,7 @@ Done means: the six commands in section 9 succeed on Windows, and the report in 
 2. **Never run the tray app.** Do not start `seatswap.exe` or `seatswap-tray.exe` without a subcommand. A running tray app polls the network, writes the autostart entry of this machine, and may touch the OS keyring. Andreas does the manual run (section 10). Running CLI subcommands by hand is allowed only the way `crates/app/tests/cli.rs` does it: explicit `--data-dir` and `--claude-config-dir` in a temp folder, with `"secretsBackend":"file"` already recorded in `accounts.json`.
 3. **`HOME` does not protect you on Windows.** `dirs::home_dir()` asks Windows for the profile folder and ignores the `HOME` variable. The integration tests stay safe only because they pass both folders explicitly and record the file backend. Never write a test that relies on `HOME`, and never call `ClaudePaths::resolve`, `AppPaths::resolve` or `store::open_secrets` in a test (AGENTS.md rule 1).
 4. **Registry in tests:** only under a throw-away key `HKCU\Software\seatswap-test-<uuid>`, deleted at the end of the test. Never the real `Run` key, never `Software\Classes`.
-5. **One place per platform difference.** A `cfg` for the operating system may appear only in: `core/src/atomic.rs`, `app/src/gui/ipc.rs` (the socket import and the socket mode), `app/src/gui/autostart.rs`, `app/src/gui/registry.rs`, `app/src/gui/notify.rs` (the app id; the `default` action in `clickable()` is there already), `app/src/gui/tray.rs` (tooltip length), the two places that already have one (`panel.rs`, `tray.rs`), and tests. If you need one anywhere else, stop and report.
+5. **One place per platform difference.** A `cfg` for the operating system may appear only in: `core/src/atomic.rs`, `app/src/gui/ipc.rs` (the socket import and the socket mode), `app/src/gui/autostart.rs`, `app/src/gui/registry.rs`, `app/src/gui/notify.rs` (the app id; the `default` action in `clickable()` is there already), `app/src/gui/tray.rs` (tooltip length), `app/src/gui/mod.rs` (the one call of `register_app_id`, added during the implementation), the two places that already have one (`panel.rs`, `tray.rs`), and tests. If you need one anywhere else, stop and report.
 6. **Stop and report** instead of deciding yourself when: a contract here does not fit the code, a third dependency seems needed, a test can only pass by weakening an assertion that holds on Unix, or anything in section 3 turns out to be wrong.
 
 ## 3. Facts already checked (do not re-derive)
@@ -262,7 +264,7 @@ Tests on Windows: the table above; `tray_program` finds a sibling file and repor
 | `Default` (click on the body) | open the `main` view | open the `add` view |
 | `Closed(_)`, `Reply(_)`, any other action | nothing | nothing |
 
-`clickable()` announces the action `default` on Linux only (`cfg!(all(unix, not(target_os = "macos")))`): a Linux notification service reports a body click only for an announced `default` action and shows no button for it; Windows reports a body click by itself and would draw a button. The code was compiled and its test run against notify-rust's Windows backend in a scratch crate, not inside this repository (the core library did not build on Windows yet), and never on Linux. Your part: it compiles and its test passes here once the app builds; if it does not, fix the cause and say so in the report.
+`clickable()` announces the action `default` on Linux only (`cfg!(all(unix, not(target_os = "macos")))`): a Linux notification service reports a body click only for an announced `default` action and shows no button for it; Windows reports a body click by itself and would draw a button. When this was written the code had been compiled and its test run only against notify-rust's Windows backend in a scratch crate; since then it also compiled and passed on Linux (CI run on commit b5d1ca8). Your part: it compiles and its test passes here once the app builds; if it does not, fix the cause and say so in the report.
 
 ### 6.7 `gui/tray.rs` — tooltip length
 
@@ -350,3 +352,29 @@ No git commits (AGENTS.md rule 7).
 - A notification icon (`IconUri`); it needs an installed icon file.
 - Treating two spellings of the config folder that differ only in upper and lower case as the same folder.
 - macOS.
+
+## 13. After the implementation (2026-11-11)
+
+**Verified on Windows 11:** the six commands of section 9 pass (264 tests, 1 ignored). The real `Run` key and `AppUserModelId` key were never written; no test key is left.
+
+**Deviations from this file, accepted:**
+- One more platform switch than rule 2.5 lists: the call of `notify::register_app_id` in `gui/mod.rs`.
+- Tests that check a file mode next to other things are not Unix-only as a whole; only the mode line is.
+- `registry::get_string` exists for tests only; the test key name uses process id, time and a counter instead of a UUID; `AutostartError::Registry` names a failed registry write.
+- The tooltip limit is a constant per platform (`TOOLTIP_LIMIT`, none on Linux), so `fit_tooltip` is used everywhere.
+
+**Changed afterwards:** a program path or folder argument that is not valid Unicode is now an error on both platforms (`AutostartError::NotUnicode`, from the one `path_text`). Before, `startup_arguments` and the Linux `Exec` line wrote such a path with its odd characters replaced.
+
+**Checked afterwards in Claude Code 2.1.322:** every save of `.credentials.json` runs under `.storage-write.lock`, including the saves of `designOauth` and `cloudSessionsOauth`. The lock order in section 7 is therefore the one Claude Code uses.
+
+**Not verified yet:** the real run (section 10). On Linux, six core modules (`atomic`, `live`, `locks`, `paths`, `types`, `watcher`) and the app's `autostart.rs` and `ipc.rs` were type-checked for the Linux target from Windows; the rest needs a Linux build.
+
+### Risk: Claude Code can move the Windows login into Credential Manager
+
+Claude Code 2.1.322 contains a second store for the login on Windows, read from its code:
+
+- It is chosen when the server-side flag `tengu_windows_credman` is true (cached in `.claude.json` under `cachedGrowthBookFeatures`) or when the variable `CLAUDE_CODE_FORCE_WINDOWS_CREDMAN=1` is set. On the test machine the flag was `false` on 2026-11-11, so the login was in the file.
+- With the flag on, Claude Code reads the login from Windows Credential Manager first and uses `.credentials.json` only when nothing is stored there. After its first successful save to Credential Manager it deletes the file.
+- The login is stored through `Bun.secrets` under Claude Code's service name and the user name, as base64 text split over several entries: one entry `<name>#m` with the number of parts and the total length, then `<name>#0`, `<name>#1`, …
+
+What it means for seatswap: with the flag on, a switch that only rewrites `.credentials.json` no longer switches anything on Windows, and once the file is gone seatswap reports "no login" (it does not fail silently). Supporting it means reading and writing those Credential Manager entries, the Windows counterpart of the macOS Keychain work in `docs/spec.md` §2.2. The `keyring` crate is already a dependency. Nothing of this is built.

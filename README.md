@@ -152,7 +152,7 @@ Whether using a subscription login this way is within Anthropic's terms is for y
 | KDE Plasma, Xfce, MATE | Expected to work (StatusNotifierItem) |
 | GNOME | Needs the AppIndicator extension |
 | Wayland sessions | Expected to work; the pop-up is centred, the compositor places it |
-| Windows 11 | Builds and passes its tests; first real run pending. `seatswap.exe` is the CLI, `seatswap-tray.exe` the same program without a console window (autostart, Start menu) |
+| Windows 11 | Builds and passes its tests; first real run pending. `seatswap.exe` is the CLI, `seatswap-tray.exe` the same program without a console window (autostart, Start menu). Works while Claude Code keeps its login in `.credentials.json`; a newer Claude Code can move it into Windows Credential Manager, which is not supported yet |
 | macOS | Not yet: needs Keychain support for Claude Code's login |
 
 ## Development
