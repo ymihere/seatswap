@@ -369,7 +369,7 @@ No git commits (AGENTS.md rule 7).
 
 **Linux:** CI built and tested everything on Linux and on Windows at commit 2f2cac8 (264 tests on each, plus format check and both clippy runs).
 
-**First real run (2026-11-11, Windows 11):** the release build was installed to `%USERPROFILE%\.localin` with a Start menu entry for `seatswap-tray.exe`. Andreas started it and reported that it works. Checked from outside: it runs as `seatswap-tray`, the `Run` value `seatswap` holds the quoted path of the installed `seatswap-tray.exe`, the notification name is registered as "seatswap", and the data folder was created in `%APPDATA%\seatswap`. Not confirmed one by one yet, from section 10: a drop-down in the settings (4), a real switch (5), the name and click behaviour of notifications (6), the tray icon after signing in again (7), a second start and `seatswap panel` (8).
+**First real run (2026-11-11, Windows 11):** the release build was installed to `%USERPROFILE%\.local\bin` with a Start menu entry for `seatswap-tray.exe`. Andreas started it and reported that it works. Checked from outside: it runs as `seatswap-tray`, the `Run` value `seatswap` holds the quoted path of the installed `seatswap-tray.exe`, the notification name is registered as "seatswap", and the data folder was created in `%APPDATA%\seatswap`. Not confirmed one by one yet, from section 10: a drop-down in the settings (4), a real switch (5), the name and click behaviour of notifications (6), the tray icon after signing in again (7), a second start and `seatswap panel` (8).
 
 ### Risk: Claude Code can move the Windows login into Credential Manager
 
