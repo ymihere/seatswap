@@ -18,6 +18,9 @@ All notable changes to this project are documented here. The format follows
   `designOauth` or `cloudSessionsOauth` login.
 
 ### Fixed
+- "Start at login" with a program path or a `--data-dir` / `--claude-config-dir` folder that is
+  not valid Unicode is now an error. Before, the autostart entry was written with the odd
+  characters replaced, which would have started seatswap with another folder.
 - A switch suggestion or "new login found" notification that timed out or was dismissed opened
   the pop-up, as if it had been clicked. Now only a click on its button or on its body does
   anything.

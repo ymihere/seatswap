@@ -40,7 +40,6 @@ pub(crate) enum AutostartError {
     #[cfg(windows)]
     #[error("cannot start at login: {path} is missing")]
     NoTrayProgram { path: PathBuf },
-    #[cfg(windows)]
     #[error("cannot start at login: {path} is not valid Unicode")]
     NotUnicode { path: PathBuf },
     #[cfg(windows)]
@@ -95,9 +94,20 @@ pub(crate) fn config_home() -> Result<PathBuf, AutostartError> {
     )
 }
 
+/// `path` as the text the autostart entry holds. The entry is text, so a path
+/// that is not valid Unicode cannot be written there unchanged: it is an error,
+/// never a path with its odd characters replaced (that would start seatswap
+/// with a different folder or program).
+fn path_text(path: &Path) -> Result<&str, AutostartError> {
+    path.to_str().ok_or_else(|| AutostartError::NotUnicode {
+        path: path.to_path_buf(),
+    })
+}
+
 /// The command-line flags the tray app was started with, so the autostart entry
 /// starts the same data folder and Claude folder. The command line made both
-/// absolute (`paths::absolute`); a relative one here is an error.
+/// absolute (`paths::absolute`); a relative one here is an error, and so is one
+/// that is not valid Unicode ([`path_text`]).
 pub(crate) fn startup_arguments(
     data_dir: Option<&Path>,
     claude_config_dir: Option<&Path>,
@@ -114,7 +124,7 @@ pub(crate) fn startup_arguments(
             return Err(AutostartError::RelativePath(path.to_path_buf()));
         }
         arguments.push(flag.to_string());
-        arguments.push(path.display().to_string());
+        arguments.push(path_text(path)?.to_string());
     }
     Ok(arguments)
 }
@@ -142,13 +152,13 @@ fn quote_argument(argument: &str) -> String {
 }
 
 #[cfg(not(windows))]
-fn exec_line(exe: &Path, arguments: &[String]) -> String {
+fn exec_line(exe: &Path, arguments: &[String]) -> Result<String, AutostartError> {
     let mut parts = Vec::with_capacity(arguments.len() + 1);
-    parts.push(quote_argument(&exe.display().to_string()));
+    parts.push(quote_argument(path_text(exe)?));
     for argument in arguments {
         parts.push(quote_argument(argument));
     }
-    format!("Exec={}", parts.join(" "))
+    Ok(format!("Exec={}", parts.join(" ")))
 }
 
 /// Write the autostart entry when `enabled`, remove it otherwise. Removing an
@@ -168,6 +178,8 @@ pub(crate) fn apply(
             Err(source) => Err(AutostartError::Io { path, source }),
         };
     }
+    // Before anything is created: a program path that cannot be written is an error.
+    let exec = exec_line(exe, arguments)?;
     if let Some(folder) = path.parent() {
         fs::create_dir_all(folder).map_err(|source| AutostartError::Io {
             path: folder.to_path_buf(),
@@ -175,8 +187,7 @@ pub(crate) fn apply(
         })?;
     }
     let entry = format!(
-        "[Desktop Entry]\nType=Application\nName=seatswap\nComment=Switch Claude Code between Claude accounts\n{}\nTerminal=false\nX-GNOME-Autostart-enabled=true\n",
-        exec_line(exe, arguments)
+        "[Desktop Entry]\nType=Application\nName=seatswap\nComment=Switch Claude Code between Claude accounts\n{exec}\nTerminal=false\nX-GNOME-Autostart-enabled=true\n"
     );
     // `write_atomic` already gives a new file the requested mode.
     atomic::write_atomic(&path, entry.as_bytes(), Access::Shared).map_err(|source| {
@@ -240,11 +251,8 @@ fn quote_argument(part: &str) -> String {
 /// error; the command is never shortened.
 #[cfg(windows)]
 fn command_line(exe: &Path, arguments: &[String]) -> Result<String, AutostartError> {
-    let program = exe.to_str().ok_or_else(|| AutostartError::NotUnicode {
-        path: exe.to_path_buf(),
-    })?;
     let mut parts = Vec::with_capacity(arguments.len() + 1);
-    parts.push(quote_argument(program));
+    parts.push(quote_argument(path_text(exe)?));
     for argument in arguments {
         parts.push(quote_argument(argument));
     }
@@ -330,11 +338,55 @@ mod tests {
         }
     }
 
+    /// An absolute path that is not valid Unicode.
+    fn not_unicode_path() -> PathBuf {
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            PathBuf::from(std::ffi::OsStr::from_bytes(b"/opt/seatswap-\xff/data"))
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStringExt;
+            // `C:\x` followed by half of a two-unit character.
+            PathBuf::from(std::ffi::OsString::from_wide(&[
+                0x43, 0x3a, 0x5c, 0x78, 0xd800,
+            ]))
+        }
+    }
+
+    #[test]
+    fn startup_arguments_refuse_a_path_that_is_not_unicode() {
+        let odd = not_unicode_path();
+        assert!(odd.is_absolute());
+        assert!(odd.to_str().is_none());
+        for (data, claude) in [(Some(odd.as_path()), None), (None, Some(odd.as_path()))] {
+            match startup_arguments(data, claude) {
+                Err(AutostartError::NotUnicode { path }) => assert_eq!(path, odd),
+                other => panic!("expected NotUnicode, got {other:?}"),
+            }
+        }
+    }
+
     #[cfg(not(windows))]
     mod xdg {
         use super::super::*;
 
         use std::os::unix::fs::PermissionsExt;
+
+        #[test]
+        fn a_program_path_that_is_not_unicode_is_refused_and_nothing_is_written() {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let exe = super::not_unicode_path();
+            match apply(true, &exe, tmp.path(), &[]) {
+                Err(AutostartError::NotUnicode { path }) => assert_eq!(path, exe),
+                other => panic!("expected NotUnicode, got {other:?}"),
+            }
+            assert!(
+                !tmp.path().join("autostart").exists(),
+                "nothing may be created for an entry that cannot be written"
+            );
+        }
 
         #[test]
         fn on_writes_an_entry_with_the_exe_and_off_removes_it() {
@@ -515,6 +567,15 @@ mod tests {
                 None
             );
             apply(false, &exe, &key.path, &[]).expect("off again is fine");
+        }
+
+        #[test]
+        fn a_program_path_that_is_not_unicode_is_refused() {
+            let exe = super::not_unicode_path();
+            match command_line(&exe, &[]) {
+                Err(AutostartError::NotUnicode { path }) => assert_eq!(path, exe),
+                other => panic!("expected NotUnicode, got {other:?}"),
+            }
         }
 
         #[test]
