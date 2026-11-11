@@ -5,7 +5,7 @@
 //! - `paths`    where Claude Code's files and seatswap's own files live
 //! - `atomic`   the one way to write a file (temp file + fsync + rename, mode kept)
 //!   and the only module that knows file modes and private files and folders
-//! - `locks`    Claude Code's three lock folders + seatswap's own switch.lock
+//! - `locks`    Claude Code's six lock folders + seatswap's own switch.lock
 //! - `live`     read/write the live login (.credentials.json) and identity (.claude.json)
 //! - `store`    accounts.json (no secrets) + secrets (OS keyring, or 0600 files)
 //! - `api`      the two HTTP endpoints: usage and token refresh

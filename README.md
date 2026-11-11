@@ -137,8 +137,9 @@ then `~/.claude`) and `--data-dir DIR` (default: `~/.config/seatswap` on Linux,
   endpoint (`platform.claude.com/v1/oauth/token`, with Claude Code's own client id) to refresh
   stored logins. Nothing else, and never anywhere but Anthropic.
 - **Logs and output** never contain a token; at most the last four characters of a refresh token.
-- **Locks:** a switch holds Claude Code's own lock files (refresh, credentials write, identity
-  write) and its own app lock, so it never overwrites a login Claude Code is writing.
+- **Locks:** a switch holds Claude Code's own lock files (the renewal locks of the main and the two
+  secondary logins, credentials write, identity write) and its own app lock, so it never
+  overwrites a login Claude Code is writing.
 
 Whether using a subscription login this way is within Anthropic's terms is for you to judge; see
 [Anthropic's terms](https://www.anthropic.com/legal/consumer-terms).

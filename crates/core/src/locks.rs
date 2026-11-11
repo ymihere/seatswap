@@ -2,8 +2,11 @@
 //!
 //! Claude Code's locks are folders: `mkdir` takes the lock, the holder keeps the
 //! folder's mtime fresh, and a folder older than its limit counts as abandoned.
-//! This module does the same, plus an advisory file lock that keeps two
-//! seatswap processes apart.
+//! A switch takes all six of them ([`claude_lock_specs`]): the renewal locks of
+//! the main login (current and legacy name) and of the `designOauth` and
+//! `cloudSessionsOauth` logins, then the `.credentials.json` and `.claude.json`
+//! write locks. This module does the same, plus an advisory file lock that
+//! keeps two seatswap processes apart.
 
 use std::fs::{self, File};
 use std::io;
@@ -160,10 +163,12 @@ fn file_time_ms(time: FileTime) -> i128 {
     i128::from(time.unix_seconds()) * 1000 + i128::from(time.nanoseconds()) / 1_000_000
 }
 
-/// The four specs in the order Claude Code takes them:
-/// refresh_lock 60 s, legacy_refresh_lock 60 s, storage_write_lock 15 s,
+/// The six specs in the order Claude Code takes them: the four renewal locks
+/// first (refresh_lock, legacy_refresh_lock, design_refresh_lock,
+/// cloud_sessions_refresh_lock, 60 s each), because Claude Code saves a renewed
+/// login inside its renewal lock; then storage_write_lock 15 s and
 /// identity_lock 10 s.
-pub fn claude_lock_specs(paths: &ClaudePaths) -> [LockSpec; 4] {
+pub fn claude_lock_specs(paths: &ClaudePaths) -> [LockSpec; 6] {
     [
         LockSpec {
             path: paths.refresh_lock(),
@@ -171,6 +176,14 @@ pub fn claude_lock_specs(paths: &ClaudePaths) -> [LockSpec; 4] {
         },
         LockSpec {
             path: paths.legacy_refresh_lock(),
+            stale_after: Duration::from_secs(60),
+        },
+        LockSpec {
+            path: paths.design_refresh_lock(),
+            stale_after: Duration::from_secs(60),
+        },
+        LockSpec {
+            path: paths.cloud_sessions_refresh_lock(),
             stale_after: Duration::from_secs(60),
         },
         LockSpec {
@@ -184,7 +197,7 @@ pub fn claude_lock_specs(paths: &ClaudePaths) -> [LockSpec; 4] {
     ]
 }
 
-/// All four, in that order, sharing one deadline (now + timeout). On failure the
+/// All six, in that order, sharing one deadline (now + timeout). On failure the
 /// ones already taken are released before returning the error. Dropping
 /// [`ClaudeLocks`] releases them in reverse order.
 pub struct ClaudeLocks {
@@ -204,8 +217,9 @@ pub fn acquire_claude_locks(
     timeout: Duration,
 ) -> Result<ClaudeLocks, LockError> {
     let deadline = Instant::now() + timeout;
-    let mut locks = Vec::with_capacity(4);
-    for spec in claude_lock_specs(paths) {
+    let specs = claude_lock_specs(paths);
+    let mut locks = Vec::with_capacity(specs.len());
+    for spec in specs {
         match acquire_dir_lock(&spec, deadline) {
             Ok(lock) => locks.push(lock),
             Err(e) => {
@@ -218,7 +232,7 @@ pub fn acquire_claude_locks(
     Ok(ClaudeLocks { locks })
 }
 
-/// True when any of the four exists and is not stale. The watcher reads only
+/// True when any of the six exists and is not stale. The watcher reads only
 /// when false.
 pub fn claude_locks_busy(paths: &ClaudePaths) -> bool {
     claude_lock_specs(paths)
@@ -397,20 +411,22 @@ mod tests {
     }
 
     #[test]
-    fn claude_locks_take_all_four_in_order() {
+    fn claude_locks_take_all_six_in_order() {
         let tmp = tempfile::tempdir().unwrap();
         let paths = fake_paths(&tmp);
         let specs = claude_lock_specs(&paths);
         assert_eq!(specs[0].path, paths.refresh_lock());
         assert_eq!(specs[1].path, paths.legacy_refresh_lock());
-        assert_eq!(specs[2].path, paths.storage_write_lock());
-        assert_eq!(specs[3].path, paths.identity_lock());
+        assert_eq!(specs[2].path, paths.design_refresh_lock());
+        assert_eq!(specs[3].path, paths.cloud_sessions_refresh_lock());
+        assert_eq!(specs[4].path, paths.storage_write_lock());
+        assert_eq!(specs[5].path, paths.identity_lock());
         assert_eq!(
             specs
                 .iter()
                 .map(|s| s.stale_after.as_secs())
                 .collect::<Vec<_>>(),
-            vec![60, 60, 15, 10]
+            vec![60, 60, 60, 60, 15, 10]
         );
 
         let held = acquire_claude_locks(&paths, Duration::from_secs(1)).unwrap();
@@ -432,7 +448,7 @@ mod tests {
     }
 
     #[test]
-    fn busy_third_lock_releases_the_first_two() {
+    fn busy_storage_lock_releases_the_four_before_it() {
         let tmp = tempfile::tempdir().unwrap();
         let paths = fake_paths(&tmp);
         fs::create_dir(paths.storage_write_lock()).unwrap();
@@ -442,13 +458,17 @@ mod tests {
             Err(e) => panic!("expected Busy for the storage lock, got {e}"),
             Ok(_) => panic!("expected Busy, got all locks"),
         }
+        for (taken, which) in [
+            (paths.refresh_lock(), "first"),
+            (paths.legacy_refresh_lock(), "second"),
+            (paths.design_refresh_lock(), "third"),
+            (paths.cloud_sessions_refresh_lock(), "fourth"),
+        ] {
+            assert!(!taken.exists(), "{which} lock must be released");
+        }
         assert!(
-            !paths.refresh_lock().exists(),
-            "first lock must be released"
-        );
-        assert!(
-            !paths.legacy_refresh_lock().exists(),
-            "second lock must be released"
+            !paths.identity_lock().exists(),
+            "the lock after the busy one must never be taken"
         );
         assert!(
             paths.storage_write_lock().is_dir(),
@@ -467,6 +487,24 @@ mod tests {
         assert!(!claude_locks_busy(&paths));
         fs::create_dir(paths.identity_lock()).unwrap();
         assert!(claude_locks_busy(&paths));
+    }
+
+    #[test]
+    fn the_two_secondary_renewal_locks_count_as_busy_for_60_s() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = fake_paths(&tmp);
+        for lock in [
+            paths.design_refresh_lock(),
+            paths.cloud_sessions_refresh_lock(),
+        ] {
+            fs::create_dir(&lock).unwrap();
+            assert!(claude_locks_busy(&paths), "{} is fresh", lock.display());
+            backdate(&lock, 30);
+            assert!(claude_locks_busy(&paths), "{} is 30 s old", lock.display());
+            backdate(&lock, 120);
+            assert!(!claude_locks_busy(&paths), "{} is stale", lock.display());
+            fs::remove_dir(&lock).unwrap();
+        }
     }
 
     #[test]

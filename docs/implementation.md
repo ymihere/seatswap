@@ -129,17 +129,20 @@ pub enum LockError {
 /// The parent folder must exist (no create_dir_all: a missing config folder is an Io error).
 pub fn acquire_dir_lock(spec: &LockSpec, deadline: Instant) -> Result<DirLock, LockError>;
 
-/// The four specs in the order Claude Code takes them:
-/// refresh_lock 60 s, legacy_refresh_lock 60 s, storage_write_lock 15 s, identity_lock 10 s.
-pub fn claude_lock_specs(paths: &ClaudePaths) -> [LockSpec; 4];
+/// The six specs in the order Claude Code takes them: the renewal locks first, because
+/// Claude Code saves a renewed login inside its renewal lock:
+/// refresh_lock 60 s, legacy_refresh_lock 60 s, design_refresh_lock 60 s (designOauth),
+/// cloud_sessions_refresh_lock 60 s (cloudSessionsOauth), storage_write_lock 15 s,
+/// identity_lock 10 s.
+pub fn claude_lock_specs(paths: &ClaudePaths) -> [LockSpec; 6];
 
-/// All four, in that order, sharing one deadline (now + timeout). On failure the ones
+/// All six, in that order, sharing one deadline (now + timeout). On failure the ones
 /// already taken are released before returning the error. Dropping ClaudeLocks releases
 /// them in reverse order.
 pub struct ClaudeLocks { /* Vec<DirLock> */ }
 pub fn acquire_claude_locks(paths: &ClaudePaths, timeout: Duration) -> Result<ClaudeLocks, LockError>;
 
-/// True when any of the four exists and is not stale. The watcher reads only when false.
+/// True when any of the six exists and is not stale. The watcher reads only when false.
 pub fn claude_locks_busy(paths: &ClaudePaths) -> bool;
 
 /// seatswap's own exclusive lock on <data_dir>/switch.lock (fs4 file lock, the file

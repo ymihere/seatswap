@@ -117,15 +117,16 @@ seatswap shares the login files with every running Claude Code session, so it ha
 
 - **Sessions re-read the file when it changes.** *(code, tested)* Before a session uses its login, it looks at the modification time of `.credentials.json`. If the time changed, it drops its copy and reads the file again. So a running session picks up a switched login at its next request. No restart is needed.
 - **A lock for renewals.** *(tested)* Before a session renews the login it takes `.oauth_refresh.lock` in the config folder, then a second lock next to the config folder (`<config folder>.lock`, the one older versions use), and writes an owner note `.oauth_refresh.lock.owner` (process ID and start time). It holds them until the new tokens are saved. A session that finds the lock taken tries 5 times, 1–2 s apart, and then gives up on the renewal for now *(code)*.
+- **Two more renewal locks.** *(code, Claude Code 2.1.322)* Two secondary logins in `.credentials.json`, `designOauth` and `cloudSessionsOauth`, are renewed under their own lock folders in the config folder: `.design_oauth_refresh.lock` and `.cloud_sessions_oauth_refresh.lock`, abandoned after 60 s. The renewal follows the same pattern as the main login: read the key under the lock, call the server, save only if the key is unchanged. That its save also takes `.storage-write.lock` was read for the main login and is assumed for these two.
 - **A lock for every write of `.credentials.json`.** *(tested)* `.storage-write.lock` in the config folder. Claude Code writes this file often, not only for renewals: one session start rewrote it about 20 times in 2.5 s while it added its MCP server entries. Each write reads the whole file, changes its part and writes the whole file back.
 - **A lock for every write of `.claude.json`.** *(tested)* `.claude.json.lock` next to the file.
 - **All of these locks are folders** made with `mkdir`. The holder keeps the folder's modification time fresh. Others treat a lock as abandoned when that time is older than 60 s (renewal), 15 s (`.storage-write.lock`) or 10 s (`.claude.json.lock`) *(code)*. The owner note only lets a session take the renewal lock over early, when the holder is proven dead *(code)*.
-- **Claude Code waits for all three** when someone else holds them *(tested)*.
+- **Claude Code waits for all three** (renewal, `.storage-write.lock`, `.claude.json.lock`) when someone else holds them *(tested)*.
 - **Renewal uses the file, not memory.** *(code)* Under the lock the session reads the file again and sends the refresh token it finds *there*. A session never sends an old refresh token it remembers.
 - **Save only if nothing changed.** *(code)* After a renewal the session writes the new tokens only if the file still holds the refresh token it sent. If something else changed the file meanwhile, it keeps the file as it is and adopts it. The renewed tokens are then lost.
 
 What follows for seatswap:
-- It must hold the renewal lock while it swaps the login (§6.2). Otherwise a switch can land in the middle of a renewal: the old account's refresh token was just used up, the new one is thrown away, and seatswap saves a dead login for that account.
+- It must hold the renewal lock while it swaps the login (§6.2). Otherwise a switch can land in the middle of a renewal: the old account's refresh token was just used up, the new one is thrown away, and seatswap saves a dead login for that account. The same holds for the two secondary renewal locks: `designOauth` and `cloudSessionsOauth` are among the keys a switch swaps.
 - It must hold `.storage-write.lock` while it rewrites `.credentials.json`, and `.claude.json.lock` while it rewrites `.claude.json`. Otherwise a write that Claude Code started just before the switch puts the old login back, or the switch wipes out an MCP login that Claude Code just saved.
 - With these locks held, a running session cannot write an old account back over a switched login.
 - Exceptions: sessions started with `CLAUDE_CODE_OAUTH_TOKEN`, and sessions started by another app that hands them a token (Claude Desktop), do not follow the file.
@@ -265,8 +266,10 @@ switch(target):
                                                        keeps two seatswap processes apart)
   lock  Claude Code's locks (§2.6), in the order Claude Code takes them:
           1. <config folder>/.oauth_refresh.lock, then <config folder>.lock   (renewal)
-          2. <config folder>/.storage-write.lock                              (.credentials.json)
-          3. .claude.json.lock next to .claude.json                           (.claude.json)
+          2. <config folder>/.design_oauth_refresh.lock,
+             then <config folder>/.cloud_sessions_oauth_refresh.lock          (secondary renewals)
+          3. <config folder>/.storage-write.lock                              (.credentials.json)
+          4. .claude.json.lock next to .claude.json                           (.claude.json)
         wait up to 10 s for all of them, then stop with
         "Claude Code is busy with its login, try again"
   live  = read the login keys (§2.1) from the live login   (file or macOS Keychain)

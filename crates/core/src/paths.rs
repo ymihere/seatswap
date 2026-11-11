@@ -97,6 +97,18 @@ impl ClaudePaths {
         append_to_file_name(&real, ".lock")
     }
 
+    /// Claude Code's renewal lock for the `designOauth` login:
+    /// `<config_dir>/.design_oauth_refresh.lock`.
+    pub fn design_refresh_lock(&self) -> PathBuf {
+        self.config_dir.join(".design_oauth_refresh.lock")
+    }
+
+    /// Claude Code's renewal lock for the `cloudSessionsOauth` login:
+    /// `<config_dir>/.cloud_sessions_oauth_refresh.lock`.
+    pub fn cloud_sessions_refresh_lock(&self) -> PathBuf {
+        self.config_dir.join(".cloud_sessions_oauth_refresh.lock")
+    }
+
     /// Lock for every write of `.credentials.json`: `<config_dir>/.storage-write.lock`.
     pub fn storage_write_lock(&self) -> PathBuf {
         self.config_dir.join(".storage-write.lock")
@@ -242,6 +254,14 @@ mod tests {
         assert_eq!(
             p.refresh_lock(),
             Path::new("/home/u/.claude/.oauth_refresh.lock")
+        );
+        assert_eq!(
+            p.design_refresh_lock(),
+            Path::new("/home/u/.claude/.design_oauth_refresh.lock")
+        );
+        assert_eq!(
+            p.cloud_sessions_refresh_lock(),
+            Path::new("/home/u/.claude/.cloud_sessions_oauth_refresh.lock")
         );
     }
 

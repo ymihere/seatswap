@@ -2,7 +2,7 @@
 //! or editing accounts.
 //!
 //! Every write of Claude Code's files happens while holding seatswap's own
-//! lock first and then Claude Code's four lock folders, in that order; dropping
+//! lock first and then Claude Code's six lock folders, in that order; dropping
 //! the guards releases them in reverse. The live files are read again under those
 //! locks, never from a value read before them.
 
@@ -17,7 +17,7 @@ use crate::paths::ClaudePaths;
 use crate::store::{self, Account, AccountsFile, LoginState, Store, StoreError};
 use crate::types::{Login, OAuthAccount};
 
-/// How long to wait for Claude Code's four lock folders (spec §6.2).
+/// How long to wait for Claude Code's six lock folders (spec §6.2).
 pub const CLAUDE_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long to wait for seatswap's own lock (spec §6.2).
 pub const APP_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
@@ -154,7 +154,7 @@ pub enum LiveState {
 }
 
 /// §6.2. The whole switch happens under seatswap's lock and Claude Code's
-/// four lock folders, taken in that order.
+/// six lock folders, taken in that order.
 pub fn switch_to(
     claude: &ClaudePaths,
     store: &Store,
@@ -848,6 +848,8 @@ mod tests {
             for path in [
                 self.paths.refresh_lock(),
                 self.paths.legacy_refresh_lock(),
+                self.paths.design_refresh_lock(),
+                self.paths.cloud_sessions_refresh_lock(),
                 self.paths.storage_write_lock(),
                 self.paths.identity_lock(),
             ] {
@@ -1170,6 +1172,8 @@ mod tests {
         assert_eq!(w.secrets_snapshot(), before_secrets);
         assert!(!w.paths.refresh_lock().exists());
         assert!(!w.paths.legacy_refresh_lock().exists());
+        assert!(!w.paths.design_refresh_lock().exists());
+        assert!(!w.paths.cloud_sessions_refresh_lock().exists());
         assert!(!w.paths.identity_lock().exists());
         assert!(lock.is_dir(), "the foreign lock is not ours to remove");
     }

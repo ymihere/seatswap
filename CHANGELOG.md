@@ -12,6 +12,11 @@ All notable changes to this project are documented here. The format follows
   "seatswap". Windows gets two programs: `seatswap.exe` for the terminal and `seatswap-tray.exe`,
   the same program without a console window, for autostart and the Start menu.
 
+### Changed
+- A switch also takes Claude Code's two newer renewal locks, `.design_oauth_refresh.lock` and
+  `.cloud_sessions_oauth_refresh.lock`, so it cannot land in the middle of a renewal of the
+  `designOauth` or `cloudSessionsOauth` login.
+
 ### Fixed
 - A switch suggestion or "new login found" notification that timed out or was dismissed opened
   the pop-up, as if it had been clicked. Now only a click on its button or on its body does
