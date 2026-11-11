@@ -18,11 +18,14 @@ pub(crate) fn percent(value: f64) -> String {
     format!("{}%", integer_percent(value))
 }
 
-/// The age of a usage fetch: `now`, `5 min ago`, `2 h ago`, `3 d ago`.
+/// The age of a poll or a usage fetch: `12 s ago`, `5 min ago`, `2 h ago`,
+/// `3 d ago` (spec §11 mock-up). A time a little in the future (the clocks of
+/// this machine and the server differ) reads `0 s ago`.
+/// The panel gets its texts from here too (`panel::time_texts`).
 pub(crate) fn format_age(fetched_at: DateTime<Utc>, now: DateTime<Utc>) -> String {
-    let seconds = (now - fetched_at).num_seconds();
+    let seconds = (now - fetched_at).num_seconds().max(0);
     if seconds < 60 {
-        return "now".to_string();
+        return format!("{seconds} s ago");
     }
     let minutes = seconds / 60;
     if minutes < 60 {
@@ -52,7 +55,7 @@ fn reset_minute(resets_at: DateTime<Utc>) -> DateTime<Utc> {
 /// under 24 h hours and minutes (`35m`, `1h05m`), up to 48 h days and hours
 /// (`1d18h`), beyond 48 h the local weekday and clock time (`Sun 02:00`).
 /// Minutes round up, so a reset 30 s away reads `1m`, not `0m`.
-/// The panel gets its texts from here too (`panel::reset_texts`).
+/// The panel gets its texts from here too (`panel::time_texts`).
 pub(crate) fn format_reset_at<Tz: TimeZone>(
     resets_at: DateTime<Utc>,
     now: DateTime<Utc>,
@@ -286,7 +289,8 @@ mod tests {
     #[test]
     fn ages_are_human_readable() {
         let now = utc("2026-11-10T12:00:00Z");
-        assert_eq!(format_age(now - Duration::seconds(10), now), "now");
+        assert_eq!(format_age(now - Duration::seconds(10), now), "10 s ago");
+        assert_eq!(format_age(now + Duration::seconds(3), now), "0 s ago");
         assert_eq!(format_age(now - Duration::minutes(5), now), "5 min ago");
         assert_eq!(format_age(now - Duration::hours(2), now), "2 h ago");
         assert_eq!(format_age(now - Duration::days(3), now), "3 d ago");

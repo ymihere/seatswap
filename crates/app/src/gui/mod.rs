@@ -142,7 +142,7 @@ pub(crate) fn run(
             panel::remove_account,
             panel::save_settings,
             panel::icon_preview,
-            panel::reset_texts,
+            panel::time_texts,
             panel::fit_panel,
             panel::hide_panel,
         ])

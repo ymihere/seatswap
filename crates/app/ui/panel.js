@@ -164,16 +164,6 @@ function fmtPercent(value) {
   return `${shortPercent(value)} %`;
 }
 
-function ageText(milliseconds) {
-  const seconds = Math.max(0, Math.floor(milliseconds / 1000));
-  if (seconds < 60) return `${seconds} s ago`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes} min ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours} h ago`;
-  return `${Math.floor(hours / 24)} d ago`;
-}
-
 function prefersReducedMotion() {
   return Boolean(
     typeof window !== "undefined" &&
@@ -376,13 +366,13 @@ function otherLimits(view) {
     .filter((entry) => entry.name && !known.has(entry.name));
 }
 
+// The age of an account's usage, shown once it is older than two minutes.
 function usageAge(view) {
   if (!view || !view.usage || !view.fetchedAt) return null;
   const time = Date.parse(view.fetchedAt);
   if (!Number.isFinite(time)) return null;
-  const elapsed = Date.now() - time;
-  if (elapsed < 120000) return null;
-  return `usage ${ageText(elapsed)}`;
+  if (Date.now() - time < 120000) return null;
+  return h("span", {}, ["usage ", timeNode(view.fetchedAt, "age")]);
 }
 
 function accountLabel(view) {
@@ -476,7 +466,6 @@ function renderMain() {
   if (reordered) animateCardMoves(cards, previousPositions);
 
   updateAge();
-  updateResetTimes();
   fitPanel();
 
   if (focusField) {
@@ -701,7 +690,7 @@ function renderSuggestionBanner(suggestion) {
   const toName = to ? accountLabel(to) : "another account";
   const text = [`${fromName} is at ${fmtPercent(suggestion.fromPercent)}`];
   if (suggestion.fromResetsAt) {
-    text.push(" (resets ", resetNode(suggestion.fromResetsAt, "clock"), ")");
+    text.push(" (resets ", timeNode(suggestion.fromResetsAt, "clock"), ")");
   }
   text.push(` — switch to ${toName} (${fmtPercent(suggestion.toPercent)})?`);
 
@@ -803,10 +792,11 @@ function renderCard(view, index) {
   const metaParts = [];
   if (view.email) metaParts.push(view.email);
   if (view.plan) metaParts.push(view.plan);
-  const usageAgeText = usageAge(view);
-  if (usageAgeText) metaParts.push(usageAgeText);
   const metaText = metaParts.length ? metaParts.join(" · ") : "no login details";
-  main.appendChild(h("div", { class: "card-meta", text: metaText, title: metaText }));
+  const age = usageAge(view);
+  main.appendChild(
+    h("div", { class: "card-meta", title: metaText }, age ? [metaText, " · ", age] : metaText)
+  );
 
   if (view.loginState === "loggedOut") {
     main.appendChild(renderLoggedOut());
@@ -904,7 +894,7 @@ function renderUsageRow(name, limit, showReset) {
 
   const reset =
     showReset && limit.resetsAt
-      ? resetNode(limit.resetsAt, "countdown", "reset-time")
+      ? timeNode(limit.resetsAt, "countdown", "reset-time")
       : h("span", { class: "reset-time" });
 
   return h("div", { class: "usage-row" }, [
@@ -2094,63 +2084,67 @@ function fitPanel() {
 // header age and live countdowns
 // ---------------------------------------------------------------------------
 
+// The header's poll age, then every time text on the page (`updateTimes`).
+// Runs every second and after each state change.
 function updateAge() {
   const node = document.getElementById("poll-age");
-  if (!node) return;
-  const refresh = document.getElementById("refresh-btn");
-  if (refresh) refresh.classList.toggle("refreshing", state.refreshing);
-  if (state.refreshing) {
-    node.textContent = "refreshing…";
-    return;
+  if (node) {
+    const refresh = document.getElementById("refresh-btn");
+    if (refresh) refresh.classList.toggle("refreshing", state.refreshing);
+    const polled = state.snapshot && state.snapshot.lastPollAt;
+    const status = state.refreshing
+      ? "refreshing…"
+      : !state.snapshot
+        ? "loading…"
+        : !polled || !Number.isFinite(Date.parse(polled))
+          ? "never"
+          : null;
+    if (status) {
+      node.removeAttribute("data-time");
+      node.textContent = status;
+    } else {
+      node.setAttribute("data-time", polled);
+      node.setAttribute("data-time-style", "age");
+    }
   }
-  if (!state.snapshot) {
-    node.textContent = "loading…";
-    return;
-  }
-  if (!state.snapshot.lastPollAt) {
-    node.textContent = "never";
-    return;
-  }
-  const time = Date.parse(state.snapshot.lastPollAt);
-  if (!Number.isFinite(time)) {
-    node.textContent = "never";
-    return;
-  }
-  node.textContent = ageText(Date.now() - time);
+  updateTimes();
 }
 
-// A reset time to be written by `updateResetTimes`. `style` is `countdown`
-// (`35m`, `1h05m`, `1d18h`, `Sun 02:00`) or `clock` (`14:40`, `Sun 02:00`).
-function resetNode(iso, style, className) {
+// A time written by `updateTimes`. `style` is `countdown` (`35m`, `1h05m`,
+// `1d18h`, `Sun 02:00`), `clock` (`14:40`, `Sun 02:00`) or `age` (`12 s ago`,
+// `5 min ago`).
+function timeNode(iso, style, className) {
   return h("span", {
     class: className || "",
-    "data-resets-at": String(iso),
-    "data-reset-style": style,
+    "data-time": String(iso),
+    "data-time-style": style,
   });
 }
 
-// Every reset time on the page, written by the Rust side (`reset_texts`), so
-// the panel, the tray menu, the tooltip and the CLI share one rule
-// (`format::format_reset_at`, `format::format_reset_clock`).
-async function updateResetTimes() {
-  const nodes = Array.from(document.querySelectorAll("[data-resets-at]"));
+// Every time text on the page, written by the Rust side (`time_texts`), so the
+// panel, the tray menu, the tooltip and the CLI share one rule (`format.rs`).
+async function updateTimes() {
+  const nodes = Array.from(document.querySelectorAll("[data-time]"));
   if (nodes.length === 0) return;
-  const resets = nodes.map((node) => ({
-    at: node.getAttribute("data-resets-at"),
-    style: node.getAttribute("data-reset-style"),
+  const times = nodes.map((node) => ({
+    at: node.getAttribute("data-time"),
+    style: node.getAttribute("data-time-style"),
   }));
   try {
-    const texts = await invoke("reset_texts", { resets });
+    const texts = await invoke("time_texts", { times });
     if (!Array.isArray(texts) || texts.length !== nodes.length) {
-      throw new Error("reset_texts returned an unexpected reply");
+      throw new Error("time_texts returned an unexpected reply");
     }
     nodes.forEach((node, index) => {
+      // The node may have changed meaning while the request ran (the header
+      // switching to "refreshing…"); only write the text it asked for.
+      if (node.getAttribute("data-time") !== times[index].at) return;
       if (node.textContent !== texts[index]) node.textContent = texts[index];
       node.removeAttribute("title");
     });
   } catch (error) {
     const message = errorMessage(error);
-    console.error(`reset times: ${message}`);
+    console.error(`time texts: ${message}`);
     for (const node of nodes) {
       node.textContent = "?";
       node.title = message;
@@ -2796,9 +2790,10 @@ async function fixtureInvoke(command, args) {
 
     // Only a stand-in so the page can be looked at in a browser: the real
     // texts come from `format.rs`, which a browser cannot run.
-    case "reset_texts":
-      return (args.resets || []).map((reset) => {
-        const date = new Date(reset.at);
+    case "time_texts":
+      return (args.times || []).map((time) => {
+        if (time.style === "age") return "a moment ago";
+        const date = new Date(time.at);
         return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
       });
 
@@ -2881,7 +2876,6 @@ async function boot() {
   }
 
   setInterval(updateAge, 1000);
-  setInterval(updateResetTimes, 20000);
   updateAge();
 }
 
