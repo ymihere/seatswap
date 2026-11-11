@@ -367,7 +367,9 @@ No git commits (AGENTS.md rule 7).
 
 **Checked afterwards in Claude Code 2.1.322:** every save of `.credentials.json` runs under `.storage-write.lock`, including the saves of `designOauth` and `cloudSessionsOauth`. The lock order in section 7 is therefore the one Claude Code uses.
 
-**Not verified yet:** the real run (section 10). On Linux, six core modules (`atomic`, `live`, `locks`, `paths`, `types`, `watcher`) and the app's `autostart.rs` and `ipc.rs` were type-checked for the Linux target from Windows; the rest needs a Linux build.
+**Linux:** CI built and tested everything on Linux and on Windows at commit 2f2cac8 (264 tests on each, plus format check and both clippy runs).
+
+**First real run (2026-11-11, Windows 11):** the release build was installed to `%USERPROFILE%\.localin` with a Start menu entry for `seatswap-tray.exe`. Andreas started it and reported that it works. Checked from outside: it runs as `seatswap-tray`, the `Run` value `seatswap` holds the quoted path of the installed `seatswap-tray.exe`, the notification name is registered as "seatswap", and the data folder was created in `%APPDATA%\seatswap`. Not confirmed one by one yet, from section 10: a drop-down in the settings (4), a real switch (5), the name and click behaviour of notifications (6), the tray icon after signing in again (7), a second start and `seatswap panel` (8).
 
 ### Risk: Claude Code can move the Windows login into Credential Manager
 

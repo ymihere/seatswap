@@ -25,8 +25,8 @@ see at a glance which one still has room.
 ## Status
 
 Early (0.1). Built and used daily on **Linux Mint 22 Cinnamon (X11)**. On Windows 11 it builds
-and passes its tests (Claude Code keeps its login in the same file there); the first real run of
-the tray app is still pending. macOS is
+and passes its tests (Claude Code keeps its login in the same file there), and the tray app had
+its first run there on 2026-11-11; not every check of that run is done yet. macOS is
 not supported yet: Claude Code keeps its login in the Keychain there, and seatswap does not
 read or write that yet.
 
@@ -152,7 +152,7 @@ Whether using a subscription login this way is within Anthropic's terms is for y
 | KDE Plasma, Xfce, MATE | Expected to work (StatusNotifierItem) |
 | GNOME | Needs the AppIndicator extension |
 | Wayland sessions | Expected to work; the pop-up is centred, the compositor places it |
-| Windows 11 | Builds and passes its tests; first real run pending. `seatswap.exe` is the CLI, `seatswap-tray.exe` the same program without a console window (autostart, Start menu). Works while Claude Code keeps its login in `.credentials.json`; a newer Claude Code can move it into Windows Credential Manager, which is not supported yet |
+| Windows 11 | Builds and passes its tests; first run on 2026-11-11 (tray app, start at login); a switch and the notifications are not confirmed yet. `seatswap.exe` is the CLI, `seatswap-tray.exe` the same program without a console window (autostart, Start menu). Works while Claude Code keeps its login in `.credentials.json`; a newer Claude Code can move it into Windows Credential Manager, which is not supported yet |
 | macOS | Not yet: needs Keychain support for Claude Code's login |
 
 ## Development
