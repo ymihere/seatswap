@@ -1,0 +1,16 @@
+name: Set up the build
+description: Tauri's system libraries on Linux, the stable Rust toolchain and the cargo cache. Used by CI and by the release build.
+runs:
+  using: composite
+  steps:
+    - name: System libraries for Tauri
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential pkg-config libwebkit2gtk-4.1-dev libxdo-dev \
+          libayatana-appindicator3-dev librsvg2-dev
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy, rustfmt
+    - uses: Swatinem/rust-cache@v2

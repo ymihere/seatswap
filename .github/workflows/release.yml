@@ -1,0 +1,89 @@
+name: Release
+
+# Pushing a tag vX.Y.Z runs the CI checks, builds the Linux and Windows packages
+# and puts them into a draft release whose notes are the CHANGELOG section of
+# X.Y.Z. Publish the draft by hand after reading it (CONTRIBUTING.md, "Making a
+# release").
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    needs: check
+    strategy:
+      matrix:
+        include:
+          # Ubuntu 24.04 sets the glibc the Linux package needs (2.39, as Linux Mint 22).
+          - os: ubuntu-24.04
+            platform: x86_64-linux
+          - os: windows-latest
+            platform: x86_64-windows
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: The tag matches the version in Cargo.toml
+        shell: bash
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match version $version in Cargo.toml"
+            exit 1
+          fi
+          echo "PACKAGE=seatswap-$version-${{ matrix.platform }}" >> "$GITHUB_ENV"
+      - uses: ./.github/actions/setup
+      - run: cargo build --release --locked -p seatswap
+      - name: Package
+        shell: bash
+        run: |
+          mkdir "$PACKAGE"
+          cp README.md CHANGELOG.md LICENSE crates/app/assets/DejaVuSans-LICENSE.txt "$PACKAGE/"
+          if [ "$RUNNER_OS" = Windows ]; then
+            cp target/release/seatswap.exe target/release/seatswap-tray.exe "$PACKAGE/"
+            7z a -tzip "$PACKAGE.zip" "$PACKAGE" > /dev/null
+            sha256sum "$PACKAGE.zip" > "$PACKAGE.zip.sha256"
+          else
+            cp target/release/seatswap "$PACKAGE/"
+            tar czf "$PACKAGE.tar.gz" "$PACKAGE"
+            sha256sum "$PACKAGE.tar.gz" > "$PACKAGE.tar.gz.sha256"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PACKAGE }}
+          path: ${{ env.PACKAGE }}.*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Draft release with the CHANGELOG section as notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          awk -v head="## [$version]" \
+            'index($0, head) == 1 { on = 1; next } on && /^## \[/ { exit } on { print }' \
+            CHANGELOG.md > notes.md
+          if ! grep -q '[^[:space:]]' notes.md; then
+            echo "::error::CHANGELOG.md has no section for $version"
+            exit 1
+          fi
+          gh release create "$GITHUB_REF_NAME" dist/* --draft \
+            --title "seatswap $version" --notes-file notes.md
