@@ -29,7 +29,8 @@ clap = { version = "4", features = ["derive"] }
 tauri = { version = "2", features = ["tray-icon", "image-png"], optional = true }
 tiny-skia = { version = "0.11", optional = true }
 ab_glyph = { version = "0.2", optional = true }
-notify-rust = { version = "4", optional = true }
+# 4.19: `wait_for_response` with the same typed answer on Linux and Windows.
+notify-rust = { version = "4.19", optional = true }
 
 # Linux: Tauri's tray backend (libappindicator) reports no clicks (every click
 # opens the menu) and drops the tooltip. Enabling tray-icon's StatusNotifierItem

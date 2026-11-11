@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- A switch suggestion or "new login found" notification that timed out or was dismissed opened
+  the pop-up, as if it had been clicked. Now only a click on its button or on its body does
+  anything.
+
 ## [0.1.0] - 2026-11-11
 
 ### Added

@@ -10,6 +10,7 @@ use std::thread;
 
 use chrono::{Local, Utc};
 use notify_rust::Notification as DesktopNotification;
+use notify_rust::NotificationResponse;
 
 use seatswap_core::engine::{LoginWarning, Suggestion};
 use seatswap_core::switcher::UnsavedPolicy;
@@ -165,6 +166,39 @@ pub(crate) fn send_login_warning(warning: &LoginWarning, account: &str) {
     });
 }
 
+/// What the person clicked in a notification that offers a button.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Click {
+    Button,
+    Body,
+}
+
+/// The click behind `response`: on the button with the action id `button`, or
+/// on the notification's body. `None` for everything that is not a click: the
+/// notification timed out, was dismissed or closed, or answered with an action
+/// we did not offer. Those must do nothing.
+fn click(response: &NotificationResponse, button: &str) -> Option<Click> {
+    match response {
+        NotificationResponse::Action(action) if action == button => Some(Click::Button),
+        NotificationResponse::Default => Some(Click::Body),
+        _ => None,
+    }
+}
+
+/// A notification that can be clicked, without its text and button yet.
+///
+/// A Linux notification service reports a click on the body only as the action
+/// `default`, and only when the notification announces that action (it shows no
+/// button for it). Windows reports a body click by itself and would draw a
+/// button for the action, so it is announced on Linux only.
+fn clickable() -> DesktopNotification {
+    let mut notification = DesktopNotification::new();
+    if cfg!(all(unix, not(target_os = "macos"))) {
+        notification.action("default", "Open");
+    }
+    notification
+}
+
 /// A switch suggestion with a "Switch" action. Clicking the body opens the
 /// panel instead (spec §7.4).
 pub(crate) fn send_suggestion(
@@ -188,26 +222,33 @@ pub(crate) fn send_suggestion(
     let to_id = suggestion.to_id.clone();
     // Waiting for an action blocks, so it gets its own thread.
     thread::spawn(move || {
-        match DesktopNotification::new()
+        let shown = clickable()
             .summary("seatswap")
             .body(&body)
             .action("switch", "Switch")
-            .show()
-        {
-            Ok(handle) => handle.wait_for_action(move |action| {
-                if action == "switch" {
-                    super::request_switch(&app, to_id, UnsavedPolicy::Refuse, None);
-                } else {
-                    let handle = app.clone();
-                    let _ = app.run_on_main_thread(move || super::show_panel(&handle, "main"));
+            .show();
+        let answered = shown.and_then(|handle| {
+            handle.wait_for_response(move |response: &NotificationResponse| {
+                match click(response, "switch") {
+                    Some(Click::Button) => {
+                        super::request_switch(&app, to_id, UnsavedPolicy::Refuse, None);
+                    }
+                    Some(Click::Body) => {
+                        let handle = app.clone();
+                        let _ = app.run_on_main_thread(move || super::show_panel(&handle, "main"));
+                    }
+                    None => {}
                 }
-            }),
-            Err(error) => eprintln!("seatswap: notification: {error}"),
+            })
+        });
+        if let Err(error) = answered {
+            eprintln!("seatswap: notification: {error}");
         }
     });
 }
 
-/// "New login found: <email>. Save it as an account?" — clicking opens the add view.
+/// "New login found: <email>. Save it as an account?" — a click on the button
+/// or on the body opens the add view.
 pub(crate) fn send_unknown_login(
     app: tauri::AppHandle,
     email: Option<&str>,
@@ -216,17 +257,21 @@ pub(crate) fn send_unknown_login(
     let who = email.or(org_name).unwrap_or("unknown account");
     let body = format!("New login found: {who}. Save it as an account?");
     thread::spawn(move || {
-        match DesktopNotification::new()
+        let shown = clickable()
             .summary("seatswap")
             .body(&body)
             .action("open", "Add account…")
-            .show()
-        {
-            Ok(handle) => handle.wait_for_action(move |_action| {
-                let handle = app.clone();
-                let _ = app.run_on_main_thread(move || super::show_panel(&handle, "add"));
-            }),
-            Err(error) => eprintln!("seatswap: notification: {error}"),
+            .show();
+        let answered = shown.and_then(|handle| {
+            handle.wait_for_response(move |response: &NotificationResponse| {
+                if click(response, "open").is_some() {
+                    let handle = app.clone();
+                    let _ = app.run_on_main_thread(move || super::show_panel(&handle, "add"));
+                }
+            })
+        });
+        if let Err(error) = answered {
+            eprintln!("seatswap: notification: {error}");
         }
     });
 }
@@ -265,6 +310,32 @@ mod tests {
             to_percent: 12.0,
             from_resets_at: resets_at,
         }
+    }
+
+    #[test]
+    fn only_a_click_on_the_button_or_the_body_counts() {
+        use notify_rust::CloseReason;
+
+        let button = NotificationResponse::Action("switch".to_string());
+        assert_eq!(click(&button, "switch"), Some(Click::Button));
+        assert_eq!(
+            click(&NotificationResponse::Default, "switch"),
+            Some(Click::Body)
+        );
+        // A notification that times out, is dismissed or is closed by the
+        // service is not a click, and neither is an action we did not offer.
+        for closed in [
+            CloseReason::Expired,
+            CloseReason::Dismissed,
+            CloseReason::CloseAction,
+            CloseReason::Other(4),
+        ] {
+            assert_eq!(click(&NotificationResponse::Closed(closed), "switch"), None);
+        }
+        let other = NotificationResponse::Action("open".to_string());
+        assert_eq!(click(&other, "switch"), None);
+        let reply = NotificationResponse::Reply("yes".to_string());
+        assert_eq!(click(&reply, "switch"), None);
     }
 
     #[test]

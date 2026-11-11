@@ -389,6 +389,7 @@ For each account it shows:
 
 - When the active account's binding limit crosses **90 %** (setting) and another account is under **50 %**, send a desktop notification: "AC is at 97 % (resets 14:40). Switch to P (12 %)?" with a [Switch] action.
 - If the platform's notifications don't support actions, clicking the notification opens the pop-up.
+- A click on the notification's text opens the pop-up. A notification that times out or is dismissed does nothing.
 - One notification per account per reset window.
 
 ---
