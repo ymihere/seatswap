@@ -510,8 +510,11 @@ pub fn acquire_file_lock(path: &Path, timeout: Duration) -> Result<FileLock, Loc
 pub fn gui_lock(&self) -> PathBuf;    // <data>/gui.lock   — held for the life of the tray app
 pub fn gui_socket(&self, runtime_dir: Option<&Path>) -> Result<PathBuf, PathsError>;
     // Unix socket of the running tray app. Some(dir) → <dir>/seatswap-<16 hex FNV-1a 64 of the data
-    // folder's bytes>.sock (one socket per data folder); None → <data>/gui.sock. A path of 108 bytes or
-    // more → PathsError::SocketPathTooLong { path } (sockaddr_un limit), never a shortened path.
+    // folder's real path (fs::canonicalize)>.sock: one socket per data folder, whatever its spelling
+    // (relative, absolute, through a link). The folder must exist; otherwise PathsError::DataDir
+    // { path, source } (`seatswap panel` reports a missing one as "not running"). None → <data>/gui.sock.
+    // A path of 108 bytes or more → PathsError::SocketPathTooLong { path } (sockaddr_un limit), never a
+    // shortened path.
 pub fn runtime_dir() -> Option<PathBuf>;   // free function: $XDG_RUNTIME_DIR via dirs::runtime_dir
 // paths.rs, free function (the path only; the GUI writes it with atomic::write_atomic):
 pub fn autostart_file(xdg_config_home: &Path) -> PathBuf; // <xdg_config_home>/autostart/seatswap.desktop
@@ -594,7 +597,7 @@ Event `navigate` (payload `"main"|"add"|"settings"`) when the panel is shown for
 
 **Notifications** (`notify.rs`, notify-rust): after a switch when `notifyOnSwitch` ("Switched to P — Private"); the switch suggestion (§7.4) once per account and reset window, with a "Switch" action (`wait_for_action` on its own thread; click on the body opens the panel); login warnings once per account and level per run; an unknown live login once per identity per run ("New login found: <email>. Save it as an account?" → opens the panel).
 
-**Single instance and `seatswap panel`** (`ipc.rs`): the tray app takes `acquire_file_lock(gui_lock, 0)`. Busy → another instance runs: send `open-panel main` to `gui_socket` and exit 0. Held → remove a leftover `gui.sock`, listen on it (mode 0600); one line per connection: `open-panel <view>` → `ok`, anything else → `error unknown command`.
+**Single instance and `seatswap panel`** (`ipc.rs`): the tray app takes `acquire_file_lock(gui_lock, 0)`. Busy → another instance runs: send `open-panel main` to `gui_socket` and exit 0. Held → name the socket only now (the lock created the data folder on first start, and the name needs its real path), remove a leftover socket, listen on it (mode 0600); one line per connection: `open-panel <view>` → `ok`, anything else → `error unknown command`.
 
 **Autostart** (`autostart.rs`): at start and on `save_settings`, `startAtLogin` on → write `autostart_file($XDG_CONFIG_HOME or ~/.config)` with `Exec=<current_exe>` via `write_atomic`; off → remove it if present.
 

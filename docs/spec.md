@@ -628,6 +628,7 @@ From daily use on Linux Mint 22 Cinnamon (X11) and the headless test runs, as of
 **Fixed, kept here because the cause is easy to bring back:**
 - *The pop-up did not close* (Esc, click elsewhere). Muffin, Cinnamon's window manager, refuses a focus request without a timestamp and ignores the first one while the window is still being mapped, so the pop-up never had the keyboard focus. Now it asks with the X server's time and repeats the request after mapping until it has the focus (`panel::focus_when_mapped`).
 - *The pop-up flashed white at its old place before appearing.* It was shown first and moved and resized afterwards. Now it is built hidden at startup and only shown once the page has measured its height and it sits at its final place (`pending_show`, see the panel section of `docs/implementation.md`).
+- *A second start did not find the first* when `--data-dir` named the same folder differently (relative and absolute): the socket's name was a hash of the spelling. Now it is a hash of the folder's real path (`AppPaths::gui_socket`).
 - *Inactive accounts kept an old plan label.* The plan was only recomputed when an account was live; the refresh of inactive logins skipped it. All three places that store a login now go through `Account::note_stored_login`.
 
 **Open:**
@@ -636,5 +637,4 @@ From daily use on Linux Mint 22 Cinnamon (X11) and the headless test runs, as of
 - In the headless test the pop-up closed as soon as the mouse left it. Probably because that test screen has no window manager (focus follows the mouse); seen only there.
 - The reset-time rule exists twice: in Rust (`format::format_reset_at`, tray menu and CLI) and in the pop-up's JavaScript (`resetText`). Both carry a note to change them together; one copy would be better (the pop-up asking the Rust side for the text).
 - No built-in global shortcut (§8.3).
-- The socket name depends on how the data folder is spelled: a relative and an absolute `--data-dir` for the same folder give two sockets, so a second start would not find the first. Only matters with `--data-dir`.
 - Without a StatusNotifierWatcher on the session bus the tray cannot start, so the headless smoke test needs one.

@@ -47,7 +47,6 @@ pub(crate) enum IpcError {
         source: std::io::Error,
     },
     #[cfg(feature = "gui")]
-    #[cfg(feature = "gui")]
     #[error("gui lock: {0}")]
     Lock(#[from] LockError),
     #[error(transparent)]
@@ -58,7 +57,16 @@ pub(crate) enum IpcError {
 
 /// Tell the running tray app to open `view` (`main`, `add`, `settings`).
 pub(crate) fn send_open_panel(app: &AppPaths, view: &str) -> Result<(), IpcError> {
-    let socket = app.gui_socket(paths::runtime_dir().as_deref())?;
+    let socket = match app.gui_socket(paths::runtime_dir().as_deref()) {
+        Ok(socket) => socket,
+        // No data folder: no tray app can hold its lock there.
+        Err(PathsError::DataDir { source, .. })
+            if source.kind() == std::io::ErrorKind::NotFound =>
+        {
+            return Err(IpcError::NotRunning)
+        }
+        Err(error) => return Err(error.into()),
+    };
     send_open_panel_at(&socket, view)
 }
 
@@ -115,15 +123,15 @@ impl Listener {
         app: &AppPaths,
         on_open: impl Fn(&str) + Send + Sync + 'static,
     ) -> Result<Listener, IpcError> {
-        let socket = app.gui_socket(paths::runtime_dir().as_deref())?;
-        Self::start_at(app, socket, on_open)
+        Self::start_in(app, paths::runtime_dir().as_deref(), on_open)
     }
 
-    /// [`start`](Self::start) with the socket path given, so tests never write
-    /// into the machine's runtime folder.
-    pub(crate) fn start_at(
+    /// [`start`](Self::start) with the runtime folder given (`None`: the socket
+    /// goes into the data folder), so tests never write into the machine's
+    /// runtime folder.
+    pub(crate) fn start_in(
         app: &AppPaths,
-        socket: PathBuf,
+        runtime_dir: Option<&std::path::Path>,
         on_open: impl Fn(&str) + Send + Sync + 'static,
     ) -> Result<Listener, IpcError> {
         let on_open: Arc<dyn Fn(&str) + Send + Sync> = Arc::new(on_open);
@@ -132,6 +140,9 @@ impl Listener {
             Err(LockError::Busy { .. }) => return Err(IpcError::AlreadyRunning),
             Err(error) => return Err(IpcError::Lock(error)),
         };
+        // Only now: taking the lock creates the data folder on first start, and
+        // the socket's name needs the folder's real path.
+        let socket = app.gui_socket(runtime_dir)?;
 
         // A socket file left behind by a crash must not keep the app from starting.
         match fs::remove_file(&socket) {
@@ -296,7 +307,7 @@ mod tests {
         let app = app(&tmp);
         let (opened, received) = mpsc::channel();
         let socket = app.gui_socket(None).expect("socket path");
-        let listener = Listener::start_at(&app, socket.clone(), move |view| {
+        let listener = Listener::start_in(&app, None, move |view| {
             let _ = opened.send(view.to_string());
         })
         .expect("listener");
@@ -316,13 +327,9 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let app = app(&tmp);
         let (opened, received) = mpsc::channel();
-        let _listener = Listener::start_at(
-            &app,
-            app.gui_socket(None).expect("socket path"),
-            move |view| {
-                let _ = opened.send(view.to_string());
-            },
-        )
+        let _listener = Listener::start_in(&app, None, move |view| {
+            let _ = opened.send(view.to_string());
+        })
         .expect("listener");
 
         assert_eq!(
@@ -351,7 +358,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let app = app(&tmp);
         let socket = app.gui_socket(None).expect("socket path");
-        let _listener = Listener::start_at(&app, socket.clone(), |_| {}).expect("listener");
+        let _listener = Listener::start_in(&app, None, |_| {}).expect("listener");
 
         // Connect and send nothing: this used to hold the listener's only thread.
         let silent = UnixStream::connect(&socket).expect("silent client connects");
@@ -372,14 +379,31 @@ mod tests {
     fn a_second_listener_on_a_held_lock_is_refused() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let app = app(&tmp);
-        let first = Listener::start_at(&app, app.gui_socket(None).expect("socket path"), |_| {})
-            .expect("first listener");
-        match Listener::start_at(&app, app.gui_socket(None).expect("socket path"), |_| {}) {
+        let first = Listener::start_in(&app, None, |_| {}).expect("first listener");
+        match Listener::start_in(&app, None, |_| {}) {
             Err(IpcError::AlreadyRunning) => {}
             Err(error) => panic!("expected AlreadyRunning, got {error}"),
             Ok(_) => panic!("a second listener must be refused"),
         }
         drop(first);
+    }
+
+    /// First start: the data folder does not exist until the lock creates it,
+    /// and the socket in the runtime folder is named after its real path, so a
+    /// relative spelling of the same folder reaches it.
+    #[cfg(feature = "gui")]
+    #[test]
+    fn a_first_start_in_a_runtime_folder_is_found_by_any_spelling() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let runtime = tmp.path().join("run");
+        fs::create_dir(&runtime).expect("runtime folder");
+        let data = tmp.path().join("data");
+        let _listener = Listener::start_in(&AppPaths::at(&data), Some(&runtime), |_| {})
+            .expect("listener on a fresh data folder");
+
+        let spelled = AppPaths::at(&tmp.path().join("run/../data/"));
+        let socket = spelled.gui_socket(Some(&runtime)).expect("socket path");
+        assert_eq!(ask(&socket, "open-panel main\n"), "ok\n");
     }
 
     #[test]

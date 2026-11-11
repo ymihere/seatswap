@@ -17,6 +17,12 @@ pub enum PathsError {
     NoConfigDir,
     #[error("{path} is too long for a Unix socket path (108 bytes or more)")]
     SocketPathTooLong { path: PathBuf },
+    #[error("data folder {path}: {source}")]
+    DataDir {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 /// Claude Code's files for one config folder.
@@ -145,13 +151,21 @@ impl AppPaths {
     }
     /// The Unix socket of the running tray app. `Some(dir)` names one socket per
     /// data folder inside that runtime directory; `None` puts it in the data
-    /// folder. A path that does not fit `sockaddr_un` is an error, never
-    /// shortened.
+    /// folder. The name comes from the folder's real path, so every spelling of
+    /// one folder (relative, absolute, through a link) finds the same socket;
+    /// the folder must therefore exist. A path that does not fit `sockaddr_un`
+    /// is an error, never shortened.
     pub fn gui_socket(&self, runtime_dir: Option<&Path>) -> Result<PathBuf, PathsError> {
         let path = match runtime_dir {
             None => self.data_dir.join("gui.sock"),
             Some(dir) => {
-                let hash = fnv1a64(self.data_dir.as_os_str().as_bytes());
+                let real = std::fs::canonicalize(&self.data_dir).map_err(|source| {
+                    PathsError::DataDir {
+                        path: self.data_dir.clone(),
+                        source,
+                    }
+                })?;
+                let hash = fnv1a64(real.as_os_str().as_bytes());
                 dir.join(format!("seatswap-{hash:016x}.sock"))
             }
         };
@@ -256,24 +270,72 @@ mod tests {
 
     #[test]
     fn gui_socket_name_is_pinned_to_the_data_folder() {
-        let app = AppPaths::at(Path::new("/home/u/.config/seatswap"));
+        let tmp = tempfile::tempdir().unwrap();
+        let data = tmp.path().join("seatswap");
+        let other = tmp.path().join("seatswap-b");
+        std::fs::create_dir(&data).unwrap();
+        std::fs::create_dir(&other).unwrap();
         let runtime = Path::new("/run/user/1000");
-        assert_eq!(
-            app.gui_socket(Some(runtime)).unwrap(),
-            Path::new("/run/user/1000/seatswap-b6fe9d8bb8b6e275.sock")
-        );
 
-        let other = AppPaths::at(Path::new("/home/u/.config/seatswap-b"));
+        let socket = AppPaths::at(&data).gui_socket(Some(runtime)).unwrap();
+        let real = std::fs::canonicalize(&data).unwrap();
+        let hash = fnv1a64(real.as_os_str().as_bytes());
+        assert_eq!(
+            socket,
+            runtime.join(format!("seatswap-{hash:016x}.sock")),
+            "the name is the FNV-1a hash of the real path"
+        );
+        assert_eq!(fnv1a64(b"/home/u/.config/seatswap"), 0xb6fe_9d8b_b8b6_e275);
+
         assert_ne!(
-            app.gui_socket(Some(runtime)).unwrap(),
-            other.gui_socket(Some(runtime)).unwrap(),
+            socket,
+            AppPaths::at(&other).gui_socket(Some(runtime)).unwrap(),
             "two data folders must not share one socket"
         );
     }
 
+    /// A relative `--data-dir`, the same folder spelled with `..` or through a
+    /// link, and the absolute path all name one socket; otherwise `seatswap
+    /// panel` and a second start could not find the running tray app.
+    #[test]
+    fn every_spelling_of_the_data_folder_gives_one_socket() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data = tmp.path().join("seatswap");
+        std::fs::create_dir(&data).unwrap();
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(&data, &link).unwrap();
+        let runtime = Path::new("/run/user/1000");
+        let socket = |dir: &Path| AppPaths::at(dir).gui_socket(Some(runtime)).unwrap();
+
+        let absolute = socket(&data);
+        assert_eq!(socket(&link), absolute);
+        assert_eq!(socket(&tmp.path().join("seatswap/../seatswap/")), absolute);
+        // A relative path from the current folder, without changing it (tests
+        // run in parallel): climb to the root and walk down again.
+        let cwd = std::env::current_dir().unwrap();
+        let up: PathBuf = cwd.components().skip(1).map(|_| "..").collect();
+        let relative = up.join(data.strip_prefix("/").unwrap());
+        assert!(relative.is_relative());
+        assert_eq!(socket(&relative), absolute);
+    }
+
+    #[test]
+    fn gui_socket_of_a_missing_data_folder_is_an_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("missing");
+        match AppPaths::at(&missing).gui_socket(Some(Path::new("/run/user/1000"))) {
+            Err(PathsError::DataDir { path, source }) => {
+                assert_eq!(path, missing);
+                assert_eq!(source.kind(), std::io::ErrorKind::NotFound);
+            }
+            other => panic!("expected DataDir, got {other:?}"),
+        }
+    }
+
     #[test]
     fn gui_socket_rejects_a_path_too_long_for_sockaddr_un() {
-        let app = AppPaths::at(Path::new("/home/u/.config/seatswap"));
+        let tmp = tempfile::tempdir().unwrap();
+        let app = AppPaths::at(tmp.path());
         let runtime = PathBuf::from(format!("/tmp/{}", "d".repeat(115)));
         assert_eq!(runtime.as_os_str().as_bytes().len(), 120);
 
