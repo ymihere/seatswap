@@ -247,7 +247,7 @@ pub fn run() -> std::process::ExitCode {
 /// starts with the error in its tooltip so the person can fix it from settings.
 #[cfg(feature = "gui")]
 fn run_gui(cli: &Cli) -> Result<std::process::ExitCode, CliError> {
-    let app = app_paths(cli.data_dir.as_deref())?;
+    let app = AppPaths::resolve(cli.data_dir.as_deref())?;
     Ok(crate::gui::run(
         app,
         cli.claude_config_dir.clone(),
@@ -318,18 +318,10 @@ impl Paths {
     }
 }
 
-/// The data folder: `--data-dir`, else the platform folder.
-pub(crate) fn app_paths(data_dir: Option<&Path>) -> Result<AppPaths, PathsError> {
-    match data_dir {
-        Some(dir) => Ok(AppPaths::at(dir)),
-        None => AppPaths::resolve(None),
-    }
-}
-
 /// Resolve both folders in the order docs/implementation.md fixes:
 /// Claude folder: `--claude-config-dir`, else the `claudeConfigDir` setting,
 /// else `$CLAUDE_CONFIG_DIR`, else `~/.claude`. The data folder is resolved by
-/// [`app_paths`] first because the setting lives inside it.
+/// [`AppPaths::resolve`] first because the setting lives inside it.
 pub(crate) fn resolve_paths(
     app: AppPaths,
     claude_config_dir: Option<&Path>,
@@ -346,7 +338,7 @@ pub(crate) fn resolve_paths(
 }
 
 fn open_context(cli: &Cli) -> Result<Context, CliError> {
-    let app = app_paths(cli.data_dir.as_deref())?;
+    let app = AppPaths::resolve(cli.data_dir.as_deref())?;
     let (store, warning) = store::open_store(app)?;
     if let Some(warning) = warning {
         eprintln!("seatswap: warning: {warning}");
@@ -367,7 +359,7 @@ fn open_context(cli: &Cli) -> Result<Context, CliError> {
 
 /// `seatswap panel`: ask the running tray app to open a view.
 fn panel(cli: &Cli, view: PanelView) -> Result<(), CliError> {
-    let app = app_paths(cli.data_dir.as_deref())?;
+    let app = AppPaths::resolve(cli.data_dir.as_deref())?;
     ipc::send_open_panel(&app, view.as_str())?;
     Ok(())
 }
