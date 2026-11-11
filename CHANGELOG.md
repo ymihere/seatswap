@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-11-11
+
 ### Fixed
 - No more "no system tray" notification at login when the desktop's tray starts a moment after
   seatswap (Linux Mint: same second). seatswap now waits 30 s for a tray before it notifies.
@@ -45,6 +47,7 @@ All notable changes to this project are documented here. The format follows
   starts later): it says so and shows the icon as soon as a tray appears; `seatswap panel` opens
   the pop-up meanwhile.
 
-[Unreleased]: https://github.com/ymihere/seatswap/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/ymihere/seatswap/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/ymihere/seatswap/releases/tag/v1.0.1
 [1.0.0]: https://github.com/ymihere/seatswap/releases/tag/v1.0.0
 [0.1.0]: https://github.com/ymihere/seatswap/releases/tag/v0.1.0
