@@ -634,7 +634,9 @@ From daily use on Linux Mint 22 Cinnamon (X11) and the headless test runs, as of
 - *Without a tray on the desktop the app crashed at startup* (no StatusNotifierWatcher on the session bus: GNOME without the AppIndicator extension, or the desktop's panel starting after seatswap at login). Now it keeps running without an icon, says so, and shows the icon as soon as a tray appears (`tray::start`); `seatswap panel` works meanwhile.
 - *Inactive accounts kept an old plan label.* The plan was only recomputed when an account was live; the refresh of inactive logins skipped it. All three places that store a login now go through `Account::note_stored_login`.
 
+**Not reproducible any more** (headless runs of 2026-11-11 with Muffin, with Metacity and with no window manager; both were seen before the focus fix above and were most likely the same cause):
+- *Opening the pop-up while it is open closed it* (`seatswap panel settings` on an open pop-up). Now it stays open, switches the view and moves to the mouse; `seatswap panel` twice does the same.
+- *The pop-up closed as soon as the mouse left it.* Now it stays open until a click elsewhere, Esc or ×.
+
 **Open:**
-- Opening the pop-up while it is open closed it in the headless test (`seatswap panel settings` on an open pop-up). To check on the desktop, especially pressing the shortcut twice.
-- In the headless test the pop-up closed as soon as the mouse left it. Probably because that test screen has no window manager (focus follows the mouse); seen only there.
 - No built-in global shortcut (§8.3).
