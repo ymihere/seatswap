@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.6] - 2026-11-14
+
+### Fixed
+- The pop-up's keyboard cursor (the blue ring) no longer stays on an account from an earlier
+  opening or a click. It shows only after ↑/↓, starting from the account in use, and is gone
+  each time the pop-up opens; until then Enter does nothing.
+
 ## [1.0.5] - 2026-11-13
 
 ### Added
@@ -72,7 +79,8 @@ All notable changes to this project are documented here. The format follows
   starts later): it says so and shows the icon as soon as a tray appears; `seatswap panel` opens
   the pop-up meanwhile.
 
-[Unreleased]: https://github.com/ymihere/seatswap/compare/v1.0.5...HEAD
+[Unreleased]: https://github.com/ymihere/seatswap/compare/v1.0.6...HEAD
+[1.0.6]: https://github.com/ymihere/seatswap/releases/tag/v1.0.6
 [1.0.5]: https://github.com/ymihere/seatswap/releases/tag/v1.0.5
 [1.0.4]: https://github.com/ymihere/seatswap/releases/tag/v1.0.4
 [1.0.3]: https://github.com/ymihere/seatswap/releases/tag/v1.0.3
