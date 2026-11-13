@@ -880,6 +880,12 @@ text.lv-locked {
   font-weight: 600;
 }
 
+.view-version {
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
 .steps {
   margin: 0;
   padding-left: 18px;

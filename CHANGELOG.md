@@ -6,6 +6,9 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- The settings view shows seatswap's version at the right of its header.
+
 ## [1.0.2] - 2026-11-12
 
 ### Changed

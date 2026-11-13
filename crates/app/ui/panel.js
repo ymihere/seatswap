@@ -55,6 +55,8 @@ const state = {
   unknownKey: null,
   unknownLabel: "",
   settingsDraft: null,
+  // { text, title } for the settings header; null until loadVersion() has answered.
+  version: null,
   refreshing: false,
   lastPercents: new Map(),
   lastCardOrder: [],
@@ -1627,6 +1629,9 @@ function renderSettings() {
     h("div", { class: "view-head" }, [
       button("‹ Back", "ghost", () => setView("main")),
       h("span", { class: "view-heading", text: "Settings" }),
+      state.version
+        ? h("span", { class: "view-version", text: state.version.text, title: state.version.title })
+        : null,
     ])
   );
 
@@ -2859,6 +2864,21 @@ function handleSnapshot(snapshot) {
   updateAge();
 }
 
+// The app's version (the workspace version in Cargo.toml) for the settings header.
+async function loadVersion() {
+  if (!HAS_TAURI) {
+    state.version = { text: "fixture", title: "No Tauri: built-in test data" };
+  } else {
+    try {
+      const version = await TAURI_GLOBAL.app.getVersion();
+      state.version = { text: `v${version}`, title: `seatswap ${version}` };
+    } catch (error) {
+      state.version = { text: "v?", title: `Version unknown: ${errorMessage(error)}` };
+    }
+  }
+  if (state.view === "settings") renderSettings();
+}
+
 async function boot() {
   wireStatic();
   wireTheme();
@@ -2868,6 +2888,7 @@ async function boot() {
   }
   applyTheme();
   setView(viewFromHash(), { noHash: true });
+  loadVersion();
 
   await listen("snapshot", (payload) => handleSnapshot(payload));
   await listen("navigate", (payload) => {
