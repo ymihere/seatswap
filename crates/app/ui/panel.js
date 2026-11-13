@@ -328,9 +328,10 @@ function viewIsActive(view) {
   );
 }
 
+// The active account is the bottom card; the others keep the list order.
 function orderedViews(views) {
   return (Array.isArray(views) ? views.slice() : []).sort(
-    (a, b) => Number(viewIsActive(b)) - Number(viewIsActive(a))
+    (a, b) => Number(viewIsActive(a)) - Number(viewIsActive(b))
   );
 }
 

@@ -530,7 +530,7 @@ The target is somewhere between the macOS Control Centre and Raycast: one floati
   - Rings fill with an ease-out animation (400 ms) when the pop-up opens and when values change.
   - Colours follow §7.3, drawn as a soft gradient along the arc, with a faint glow on the red state.
 - **Account colour:** a 3 px accent bar on the card's left edge and the abbreviation badge.
-- **Active account:** at the top. The card is raised (slightly lighter), with a subtle ring in the account colour and an "Active" pill.
+- **Active account:** at the bottom. The card is raised (slightly lighter), with a subtle ring in the account colour and an "Active" pill.
 - **Closing:** Esc, the × in the header, a click anywhere else (the pop-up loses focus), or a second left click on the tray icon. The pop-up must actually get the keyboard focus when it opens, or none of the first three work (on Cinnamon it did not at first, §17).
 - **Motion:** after a switch, the cards trade places with a 250 ms spring animation. The ticking reset countdowns ("1h12m") update every minute without flicker. All animation is off when the system asks for reduced motion.
 - **Keyboard:** ↑/↓ moves between accounts, Enter switches, 1–9 switch directly, `,` opens settings, Esc closes.
@@ -541,16 +541,16 @@ The target is somewhere between the macOS Control Centre and Raycast: one floati
 ╭──────────────────────────────────────────────────────╮
 │  seatswap                           ⟳ 12 s ago  ⚙  ✕ │
 │                                                      │
+│ ▌╭────╮  P   Private                       [ Switch ]│
+│ ▌│ 31 │  …@example.com · Ultra                       │
+│ ▌│    │  Week      ██████▏                31 %  Thu  │
+│ ▌╰────╯  Opus      ██▍                    12 %       │
+│                                                      │
 │ ▌╭────╮  AC  Acme ✎                       ● Active   │
 │ ▌│ 48 │  someone@… · Team                            │
 │ ▌│ 97 │  Week      █████████▋             48 %  Sun  │
 │ ▌╰────╯  Session   ████████████████████▉  97 % 1h12m │
 │ ▌        Fable     ████████▋              43 %       │
-│                                                      │
-│ ▌╭────╮  P   Private                       [ Switch ]│
-│ ▌│ 31 │  …@example.com · Ultra                       │
-│ ▌│    │  Week      ██████▏                31 %  Thu  │
-│ ▌╰────╯  Opus      ██▍                    12 %       │
 │                                                      │
 │  ⚠ AC is almost out. P has room — switch?   [Switch] │
 │                                                      │
