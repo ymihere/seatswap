@@ -281,11 +281,11 @@ impl<R: Remote> Engine<R> {
         let active = self.active_account_id(&file);
         let settings = file.settings.clone();
 
-        for index in 0..file.accounts.len() {
-            if file.accounts[index].login_state == LoginState::LoggedOut {
+        for account in &file.accounts {
+            if account.login_state == LoginState::LoggedOut {
                 continue;
             }
-            let id = file.accounts[index].id.clone();
+            let id = account.id.clone();
             let is_active = active.as_deref() == Some(id.as_str());
             if !self.due(&id, is_active, reason, now, &settings) {
                 continue;
