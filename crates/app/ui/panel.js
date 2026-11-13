@@ -46,8 +46,9 @@ const HAS_TAURI = Boolean(
 const state = {
   snapshot: null,
   view: "main",
-  focusedIndex: 0,
-  focusInitialized: false,
+  // The account the keyboard cursor (↑/↓, Enter) is on; null = no cursor shown.
+  // Cleared every time the pop-up opens, so it never outlives one use.
+  cursorId: null,
   editingId: null,
   editor: null,
   pendingKey: null,
@@ -431,16 +432,8 @@ function renderMain() {
       : null;
 
   const views = orderedViews(state.snapshot ? state.snapshot.views : []);
-  if (views.length > 0) {
-    if (state.focusedIndex >= views.length) state.focusedIndex = views.length - 1;
-    if (state.focusedIndex < 0) state.focusedIndex = 0;
-  } else {
-    state.focusedIndex = 0;
-  }
-  if (!state.focusInitialized && views.length > 0) {
-    const activeIndex = views.findIndex((view) => viewIsActive(view));
-    state.focusedIndex = activeIndex >= 0 ? activeIndex : 0;
-    state.focusInitialized = true;
+  if (state.cursorId && !views.some((view) => view.id === state.cursorId)) {
+    state.cursorId = null;
   }
 
   if (state.editingId && !findView(state.editingId)) {
@@ -719,16 +712,11 @@ function renderCard(view, index) {
     class:
       "card" +
       (viewIsActive(view) ? " active" : "") +
-      (index === state.focusedIndex ? " focused" : ""),
+      (view.id === state.cursorId ? " focused" : ""),
     role: "listitem",
     tabindex: "-1",
     dataset: { index: String(index), accountId: view.id },
     style: { "--accent": accent, "--accent-border": rgba(accent, 0.55) },
-  });
-
-  card.addEventListener("click", (event) => {
-    if (event.target.closest("button, input, select, label, a")) return;
-    setFocused(index);
   });
 
   // The gauge is a second, larger target for the card's Switch button.
@@ -2222,16 +2210,22 @@ function setView(view, options) {
   fitPanel();
 }
 
-function setFocused(index) {
+// Move the keyboard cursor by `step` cards. Without a cursor it starts from the
+// account in use, so the first ↑ lands on the card above it.
+function moveCursor(step) {
   const views = orderedViews(state.snapshot ? state.snapshot.views : []);
   if (views.length === 0) return;
-  state.focusedIndex = ((index % views.length) + views.length) % views.length;
+  let from = views.findIndex((view) => view.id === state.cursorId);
+  if (from < 0) from = views.findIndex((view) => viewIsActive(view));
+  if (from < 0) from = step > 0 ? -1 : views.length;
+  const index = (((from + step) % views.length) + views.length) % views.length;
+  state.cursorId = views[index].id;
   const cards = document.getElementById("cards");
   if (!cards) return;
   for (let child = 0; child < cards.children.length; child += 1) {
-    cards.children[child].classList.toggle("focused", child === state.focusedIndex);
+    cards.children[child].classList.toggle("focused", child === index);
   }
-  const focused = cards.children[state.focusedIndex];
+  const focused = cards.children[index];
   if (focused) {
     if (typeof focused.focus === "function") {
       try {
@@ -2280,15 +2274,14 @@ function onKeyDown(event) {
   if (event.key === "ArrowDown" || event.key === "ArrowUp") {
     if (views.length === 0) return;
     event.preventDefault();
-    setFocused(state.focusedIndex + (event.key === "ArrowDown" ? 1 : -1));
+    moveCursor(event.key === "ArrowDown" ? 1 : -1);
     return;
   }
 
   if (event.key === "Enter") {
-    if (views.length === 0 || onControl) return;
+    if (!state.cursorId || onControl) return;
     event.preventDefault();
-    const view = views[state.focusedIndex];
-    if (view) switchTo(view.id);
+    switchTo(state.cursorId);
     return;
   }
 
@@ -2903,6 +2896,8 @@ async function boot() {
   await listen("snapshot", (payload) => handleSnapshot(payload));
   await listen("navigate", (payload) => {
     const view = typeof payload === "string" ? payload : payload && payload.view;
+    // Sent each time the pop-up opens: start without a keyboard cursor.
+    state.cursorId = null;
     if (view === "main" || view === "add" || view === "settings") setView(view);
   });
 

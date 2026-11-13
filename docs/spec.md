@@ -534,7 +534,7 @@ The target is somewhere between the macOS Control Centre and Raycast: one floati
 - **Active account:** at the bottom. The card is raised (slightly lighter), with a subtle ring in the account colour and an "Active" pill.
 - **Closing:** Esc, the × in the header, a click anywhere else (the pop-up loses focus), or a second left click on the tray icon. The pop-up must actually get the keyboard focus when it opens, or none of the first three work (on Cinnamon it did not at first, §17).
 - **Motion:** after a switch, the cards trade places with a 250 ms spring animation. The ticking reset countdowns ("1h12m") update every minute without flicker. All animation is off when the system asks for reduced motion.
-- **Keyboard:** ↑/↓ moves between accounts, Enter switches, 1–9 switch directly, `,` opens settings, Esc closes.
+- **Keyboard:** ↑/↓ moves between accounts, Enter switches, 1–9 switch directly, `,` opens settings, Esc closes. The cursor (a blue ring) appears only with the first ↑/↓, starting from the account in use, and is gone again each time the pop-up opens; until then Enter does nothing. Clicking a card does not move it.
 
 ### 11.2 Mock-up
 
