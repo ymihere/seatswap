@@ -6,6 +6,9 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- Clicking an account's gauge in the pop-up switches to that account, like its Switch button.
+
 ## [1.0.4] - 2026-11-13
 
 ### Changed

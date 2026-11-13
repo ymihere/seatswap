@@ -529,6 +529,7 @@ The target is somewhere between the macOS Control Centre and Raycast: one floati
 - **Gauges:** two concentric rings per account. The outer ring is the week, the inner the 5 h session; the week's percent is the large figure in the middle. The bars beside the gauge follow the same order: week, then session, then the per-model limits. On a plan without a session limit the inner ring is left out (no grey track) and the week's figure sits centred.
   - Rings fill with an ease-out animation (400 ms) when the pop-up opens and when values change.
   - Colours follow §7.3, drawn as a soft gradient along the arc, with a faint glow on the red state.
+  - Clicking the gauge of an account that is not in use switches to it, like its Switch button. The pointer becomes a hand over it.
 - **Account colour:** a 3 px accent bar on the card's left edge and the abbreviation badge.
 - **Active account:** at the bottom. The card is raised (slightly lighter), with a subtle ring in the account colour and an "Active" pill.
 - **Closing:** Esc, the × in the header, a click anywhere else (the pop-up loses focus), or a second left click on the tray icon. The pop-up must actually get the keyboard focus when it opens, or none of the first three work (on Cinnamon it did not at first, §17).

@@ -731,7 +731,21 @@ function renderCard(view, index) {
     setFocused(index);
   });
 
-  card.appendChild(renderGauge(view));
+  // The gauge is a second, larger target for the card's Switch button.
+  const switchable = view.loginState !== "loggedOut" && !viewIsActive(view);
+  const switchHere = (event) => {
+    event.stopPropagation();
+    switchTo(view.id);
+  };
+  const gauge = renderGauge(view);
+  if (switchable) {
+    gauge.classList.add("switchable");
+    const tip = document.createElementNS("http://www.w3.org/2000/svg", "title");
+    tip.textContent = `Switch to ${view.label || "this account"}`;
+    gauge.prepend(tip);
+    gauge.addEventListener("click", switchHere);
+  }
+  card.appendChild(gauge);
 
   const main = h("div", { class: "card-main" });
 
@@ -771,12 +785,7 @@ function renderCard(view, index) {
   } else if (viewIsActive(view)) {
     status.appendChild(h("span", { class: "pill", text: "Active" }));
   } else {
-    status.appendChild(
-      button("Switch", "small", (event) => {
-        event.stopPropagation();
-        switchTo(view.id);
-      })
-    );
+    status.appendChild(button("Switch", "small", switchHere));
   }
 
   main.appendChild(

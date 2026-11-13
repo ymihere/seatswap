@@ -644,6 +644,15 @@ input[type="checkbox"] {
   overflow: visible;
 }
 
+.gauge.switchable {
+  cursor: pointer;
+  transition: transform 120ms ease;
+}
+
+.gauge.switchable:hover {
+  transform: scale(1.06);
+}
+
 .ring-track {
   fill: none;
   stroke: var(--track);
