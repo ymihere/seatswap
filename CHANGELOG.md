@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.4] - 2026-11-13
+
+### Changed
+- The pop-up shows the account in use as the bottom card; the other accounts stay above it in
+  list order.
+
 ## [1.0.3] - 2026-11-13
 
 ### Added
@@ -61,7 +67,8 @@ All notable changes to this project are documented here. The format follows
   starts later): it says so and shows the icon as soon as a tray appears; `seatswap panel` opens
   the pop-up meanwhile.
 
-[Unreleased]: https://github.com/ymihere/seatswap/compare/v1.0.3...HEAD
+[Unreleased]: https://github.com/ymihere/seatswap/compare/v1.0.4...HEAD
+[1.0.4]: https://github.com/ymihere/seatswap/releases/tag/v1.0.4
 [1.0.3]: https://github.com/ymihere/seatswap/releases/tag/v1.0.3
 [1.0.2]: https://github.com/ymihere/seatswap/releases/tag/v1.0.2
 [1.0.1]: https://github.com/ymihere/seatswap/releases/tag/v1.0.1
