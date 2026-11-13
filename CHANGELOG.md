@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.5] - 2026-11-13
+
 ### Added
 - Clicking an account's gauge in the pop-up switches to that account, like its Switch button.
 
@@ -70,7 +72,8 @@ All notable changes to this project are documented here. The format follows
   starts later): it says so and shows the icon as soon as a tray appears; `seatswap panel` opens
   the pop-up meanwhile.
 
-[Unreleased]: https://github.com/ymihere/seatswap/compare/v1.0.4...HEAD
+[Unreleased]: https://github.com/ymihere/seatswap/compare/v1.0.5...HEAD
+[1.0.5]: https://github.com/ymihere/seatswap/releases/tag/v1.0.5
 [1.0.4]: https://github.com/ymihere/seatswap/releases/tag/v1.0.4
 [1.0.3]: https://github.com/ymihere/seatswap/releases/tag/v1.0.3
 [1.0.2]: https://github.com/ymihere/seatswap/releases/tag/v1.0.2
