@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-11-22
+
 ### Added
 
 - macOS support. Claude Code keeps its login in the Keychain there; seatswap reads and updates
@@ -26,6 +28,19 @@ All notable changes to this project are documented here. The format follows
 - The login watch noticed nothing when it saw a folder by another name: macOS reports the real
   path (`/private/var/…` for `/var/…`, the target of a linked config folder).
 - Clippy 1.95 warnings (`drop` of values without `Drop`, a negated `is_some`).
+
+### Known issues
+
+- macOS is new and little tested: the tests and a switch by the command line ran on a Mac, but the
+  tray app, its pop-up and notifications, start at login, and a running Claude Code session
+  following a switch have not been tried there.
+- macOS: seatswap needs `$USER` and uses it as it is. Claude Code falls back to the system's user
+  name without it, and uses `claude-code-user` for a name with characters other than letters,
+  digits, `.`, `_` and `-`; for such a name seatswap looks at another Keychain item.
+- macOS: a login over about 2 KB (several MCP logins, for example) is passed to `security` on its
+  command line, so it is visible in the process list while that command runs.
+- All systems: `CLAUDE_SECURESTORAGE_CONFIG_DIR`, with which Claude Code moves its login and that
+  login's write lock, is not supported. With it set, do not use seatswap to switch.
 
 ## [1.4.5] - 2026-11-21
 
@@ -668,7 +683,8 @@ All notable changes to this project are documented here. The format follows
   starts later): it says so and shows the icon as soon as a tray appears; `seatswap panel` opens
   the pop-up meanwhile.
 
-[Unreleased]: https://github.com/ymihere/seatswap/compare/v1.4.5...HEAD
+[Unreleased]: https://github.com/ymihere/seatswap/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/ymihere/seatswap/compare/v1.4.5...v1.5.0
 [1.4.5]: https://github.com/ymihere/seatswap/compare/v1.4.4...v1.4.5
 [1.4.4]: https://github.com/ymihere/seatswap/compare/v1.4.3...v1.4.4
 [1.4.3]: https://github.com/ymihere/seatswap/compare/v1.4.2...v1.4.3
