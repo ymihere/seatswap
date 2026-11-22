@@ -57,8 +57,7 @@ cd crates/app/ui && python3 -m http.server 8765
 ```
 
 Screenshots for the docs come from that demo data, except Statistics → Overview and Projects,
-which come from the maintainer's test bench (not in this repository) because they need weeks of
-history. Every name in both is made up.
+which come from the maintainer's test bench (not in this repository). Every name in both is made up.
 
 ## Rules the code follows
 
