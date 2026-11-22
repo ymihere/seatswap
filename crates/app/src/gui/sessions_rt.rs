@@ -2597,7 +2597,6 @@ fn live_rows(
         rows.warnings.extend(codex.warnings);
         rows.sessions.extend(codex.sessions);
     }
-    drop(project_of);
     memory.job_reports = reports;
     (rows, parts)
 }

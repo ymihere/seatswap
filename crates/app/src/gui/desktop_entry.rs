@@ -10,27 +10,31 @@
 //! what was written and what was left alone, so the caller prints one line per
 //! left-alone path. The icon is seatswap's own file and is still written when
 //! the entry is left alone.
+//!
+//! Windows and macOS have no such entry: there [`apply_at_start`] touches
+//! nothing and returns an empty [`Outcome`] (a Mac finds the app by its bundle
+//! in `/Applications`, and `~/.local/share` means nothing to it).
 
 use std::path::PathBuf;
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 use std::fs;
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 use std::path::Path;
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 use seatswap_core::atomic::{self, Access};
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 use seatswap_core::paths::{app_icon, applications_entry};
 
-#[cfg(not(windows))]
-use super::autostart::{exec_line, AutostartError};
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
+use super::autostart::{exec_line, has_line, symlink_at, AutostartError};
+#[cfg(not(any(windows, target_os = "macos")))]
 use super::APP_ICON_PNG;
 
 /// The line that marks an entry as seatswap's own. A file without it is left
 /// alone.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 const MANAGED_LINE: &[u8] = b"X-seatswap-managed=true";
 
 /// What [`apply`] did with the entry and its icon: the paths it wrote and the
@@ -43,7 +47,7 @@ pub(crate) struct Outcome {
     pub left_alone: Vec<PathBuf>,
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum DesktopEntryError {
     /// A path the entry must hold as text is not valid Unicode. The entry is
@@ -68,16 +72,16 @@ pub(crate) enum DesktopEntryError {
 }
 
 /// The start's menu-entry work: [`apply`] under `$XDG_DATA_HOME` with this
-/// run's flags. On Windows there is no menu entry: the outcome is empty and
-/// nothing is touched.
+/// run's flags. On Windows and macOS there is no menu entry: the outcome is
+/// empty and nothing is touched.
 pub(crate) fn apply_at_start(arguments: &[String]) -> Result<Outcome, String> {
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let data_home = super::autostart::data_home().map_err(|error| error.to_string())?;
         let exe = super::autostart::running_program()?;
         apply(&data_home, &exe, arguments).map_err(|error| error.to_string())
     }
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     {
         let _ = arguments;
         Ok(Outcome {
@@ -93,7 +97,7 @@ pub(crate) fn apply_at_start(arguments: &[String]) -> Result<Outcome, String> {
 /// The icon is written first; a failure names the file and stops the other
 /// write. A symbolic link at the icon or the entry path is left alone, and so
 /// is an entry without the managed line.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 pub(crate) fn apply(
     xdg_data_home: &Path,
     exe: &Path,
@@ -162,31 +166,25 @@ pub(crate) fn apply(
     Ok(outcome)
 }
 
-/// Whether `path` is a symbolic link, including one whose target is missing.
-/// `symlink_metadata` does not follow the link, so this sees the link itself.
-#[cfg(not(windows))]
+/// Whether `path` is a symbolic link, including one whose target is missing
+/// ([`symlink_at`]), with the path named in an error.
+#[cfg(not(any(windows, target_os = "macos")))]
 fn is_symlink(path: &Path) -> Result<bool, DesktopEntryError> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) => Ok(metadata.file_type().is_symlink()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(source) => Err(DesktopEntryError::Io {
-            path: path.to_path_buf(),
-            source,
-        }),
-    }
+    symlink_at(path).map_err(|source| DesktopEntryError::Io {
+        path: path.to_path_buf(),
+        source,
+    })
 }
 
 /// Whether `bytes` hold a line that is exactly [`MANAGED_LINE`].
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn has_managed_line(bytes: &[u8]) -> bool {
-    bytes
-        .split(|byte| *byte == b'\n')
-        .any(|line| line == MANAGED_LINE)
+    has_line(bytes, MANAGED_LINE)
 }
 
 /// Write `bytes` to `path` when it is missing or holds another content.
 /// `Ok(true)` when the file was written.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn write_if_different(path: &Path, bytes: &[u8]) -> Result<bool, DesktopEntryError> {
     match fs::read(path) {
         Ok(existing) if existing == bytes => return Ok(false),
@@ -204,7 +202,7 @@ fn write_if_different(path: &Path, bytes: &[u8]) -> Result<bool, DesktopEntryErr
 }
 
 /// Create `path`'s folder when it is missing and replace `path` with `bytes`.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn write_file(path: &Path, bytes: &[u8]) -> Result<(), DesktopEntryError> {
     if let Some(folder) = path.parent() {
         fs::create_dir_all(folder).map_err(|source| DesktopEntryError::Io {
@@ -218,7 +216,7 @@ fn write_file(path: &Path, bytes: &[u8]) -> Result<(), DesktopEntryError> {
     })
 }
 
-#[cfg(all(test, not(windows)))]
+#[cfg(all(test, not(any(windows, target_os = "macos"))))]
 mod tests {
     use super::*;
 

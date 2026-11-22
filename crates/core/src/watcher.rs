@@ -32,6 +32,10 @@ pub const DEBOUNCE_MAX: Duration = Duration::from_secs(1);
 /// How often a busy Claude Code lock is re-checked.
 pub const BUSY_RECHECK: Duration = Duration::from_millis(200);
 
+/// How often the login watch calls `on_change` without an event when the live
+/// login is a Keychain item (macOS), which cannot be watched (spec §6.4).
+pub const KEYCHAIN_POLL: Duration = Duration::from_secs(30);
+
 #[derive(Debug, thiserror::Error)]
 pub enum WatchError {
     #[error("file watch: {0}")]
@@ -106,6 +110,10 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 /// parent of every existing folder is watched as well, because on Windows the
 /// watch of a removed folder ends without an event. No folder is created. A path that exists but is not a folder, or that
 /// cannot be read, is an error.
+///
+/// When the live login is a Keychain item (`claude.login_keychain` is Some),
+/// which no event reports, `on_change` is also called every [`KEYCHAIN_POLL`]
+/// since the last call, likewise only while Claude Code's locks are free.
 pub fn watch(
     claude: &ClaudePaths,
     on_change: impl Fn() + Send + 'static,
@@ -135,6 +143,7 @@ pub fn watch(
 
     let stop = Arc::new(AtomicBool::new(false));
     let layout = Layout {
+        spellings: spellings_of(&folders),
         folders,
         watched,
         backend: Arc::clone(&backend),
@@ -151,6 +160,7 @@ pub fn watch(
                 thread_paths,
                 names,
                 layout,
+                KEYCHAIN_POLL,
                 on_change,
             )
         });
@@ -174,10 +184,12 @@ pub fn watch(
 
 /// Where the login watch looks: the folders that hold the login files, the
 /// paths watched for them now (each folder, or its nearest existing parent while
-/// it is missing), and the state the GUI reads.
+/// it is missing), the spellings an event may use for them ([`spellings_of`]),
+/// and the state the GUI reads.
 struct Layout {
     folders: Vec<PathBuf>,
     watched: Vec<PathBuf>,
+    spellings: Vec<PathBuf>,
     backend: Arc<Mutex<Option<RecommendedWatcher>>>,
     state: Arc<Mutex<WatchState>>,
 }
@@ -186,10 +198,11 @@ impl Layout {
     /// An event about one of the login folders or a parent of one may have
     /// created, removed or renamed it.
     fn touches(&self, event: &Event) -> bool {
-        event
-            .paths
-            .iter()
-            .any(|path| self.folders.iter().any(|folder| folder.starts_with(path)))
+        event.paths.iter().any(|path| {
+            self.spellings
+                .iter()
+                .any(|spelling| spelling.starts_with(path))
+        })
     }
 
     /// Plan the watches again after such an event. Returns true when the
@@ -207,6 +220,7 @@ impl Layout {
                 Err(error) => WatchState::Failed(error.to_string()),
             }
         };
+        self.spellings = spellings_of(&self.folders);
         let mut current = lock(&self.state);
         let changed = *current != state || !same_paths(&before, &self.watched);
         *current = state;
@@ -361,8 +375,76 @@ impl WatchedNames {
     }
 
     fn is_watched(&self, path: &Path) -> bool {
-        path == self.credentials || path == self.identity
+        same_place(path, &self.credentials) || same_place(path, &self.identity)
     }
+}
+
+/// Whether the event path `event` names `ours`: the same path, or the same
+/// name in the same folder once links are resolved. macOS (FSEvents) reports
+/// the real path, `/private/var/…` for a folder under `/var/…` or the target
+/// of a linked config folder. Only a path with the same name costs a look at
+/// the disk.
+fn same_place(event: &Path, ours: &Path) -> bool {
+    if event == ours {
+        return true;
+    }
+    if event.file_name().is_none() || event.file_name() != ours.file_name() {
+        return false;
+    }
+    match (event.parent(), ours.parent()) {
+        (Some(theirs), Some(mine)) => {
+            let theirs = resolved(theirs);
+            theirs.is_some() && theirs == resolved(mine)
+        }
+        _ => false,
+    }
+}
+
+/// `path` with every link in the part of it that exists resolved: the real
+/// path of its nearest existing ancestor (or of itself) with the missing rest
+/// appended. `None` when not even an ancestor can be resolved.
+fn resolved(path: &Path) -> Option<PathBuf> {
+    let mut rest = Vec::new();
+    let mut candidate = path;
+    loop {
+        if let Ok(mut real) = fs::canonicalize(candidate) {
+            real.extend(rest.iter().rev());
+            return Some(real);
+        }
+        rest.push(candidate.file_name()?);
+        candidate = candidate
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())?;
+    }
+}
+
+/// The spellings an event may use for `folders` and the folders above them:
+/// each folder as given, its real path, and for the folder and every ancestor
+/// the entry itself (a link stays a link) in its real parent. Refreshed when
+/// the layout follows the folders, so a folder that has gone since is still
+/// known by the path the system reported for it.
+fn spellings_of(folders: &[PathBuf]) -> Vec<PathBuf> {
+    let mut spellings: Vec<PathBuf> = Vec::new();
+    let mut add = |path: PathBuf| {
+        if !spellings.contains(&path) {
+            spellings.push(path);
+        }
+    };
+    for folder in folders {
+        add(folder.clone());
+        if let Some(real) = resolved(folder) {
+            add(real);
+        }
+        for entry in folder.ancestors() {
+            let (Some(parent), Some(name)) = (entry.parent(), entry.file_name()) else {
+                continue;
+            };
+            if let Some(real_parent) = resolved(parent) {
+                add(real_parent.join(name));
+            }
+        }
+    }
+    spellings
 }
 
 fn file_name(path: &Path) -> Result<&OsStr, WatchError> {
@@ -382,7 +464,8 @@ fn is_read_access(kind: &EventKind) -> bool {
 
 #[derive(Clone, Copy)]
 enum Phase {
-    /// No relevant event seen yet.
+    /// No relevant event seen yet. With a poll interval, the phase ends when the
+    /// next poll is due as if a quiet period had just ended.
     Idle,
     /// A relevant event was seen; wait until it has been quiet for [`DEBOUNCE`],
     /// but never past `deadline` (the burst's first change plus the loop's
@@ -395,16 +478,17 @@ enum Phase {
     WaitingForLocks,
 }
 
-/// How long the next wait may last. Idle has no timeout: the thread blocks on the
-/// event channel until an event arrives or the backend is dropped (which closes
-/// the channel and wakes it).
-fn wait_timeout(phase: Phase) -> Option<Duration> {
+/// How long the next wait may last. Idle waits until `next_poll` when the loop
+/// polls, and otherwise has no timeout: the thread blocks on the event channel
+/// until an event arrives or the backend is dropped (which closes the channel
+/// and wakes it).
+fn wait_timeout(phase: Phase, next_poll: Option<Instant>) -> Option<Duration> {
     match phase {
         Phase::Quiet { until, deadline } => {
             Some(fires_at(until, deadline).saturating_duration_since(Instant::now()))
         }
         Phase::WaitingForLocks => Some(BUSY_RECHECK),
-        Phase::Idle => None,
+        Phase::Idle => next_poll.map(|at| at.saturating_duration_since(Instant::now())),
     }
 }
 
@@ -414,14 +498,18 @@ fn fires_at(until: Instant, deadline: Option<Instant>) -> Instant {
     deadline.map_or(until, |deadline| until.min(deadline))
 }
 
+/// The login watch's loop. `keychain_poll` is the poll interval used when the
+/// live login is a Keychain item ([`KEYCHAIN_POLL`]; tests pass a short one).
 fn run(
     events: Receiver<notify::Result<Event>>,
     stop: Arc<AtomicBool>,
     claude: ClaudePaths,
     names: WatchedNames,
     mut layout: Layout,
+    keychain_poll: Duration,
     on_change: impl Fn() + Send + 'static,
 ) {
+    let poll = claude.login_keychain.as_ref().map(|_| keychain_poll);
     run_debounced(
         events,
         stop,
@@ -434,6 +522,7 @@ fn run(
         },
         || !locks::claude_locks_busy(&claude),
         None,
+        poll,
         on_change,
     );
 }
@@ -479,6 +568,7 @@ pub fn watch_folder(
                 |event| !is_read_access(&event.kind),
                 || true,
                 Some(DEBOUNCE_MAX),
+                None,
                 on_change,
             );
         });
@@ -501,16 +591,20 @@ pub fn watch_folder(
 /// The debounce loop shared by [`watch`] and [`watch_folder`]: wait for an event
 /// that `is_change` accepts, then after [`DEBOUNCE`] quiet (and at the latest
 /// `max_wait` after the burst's first change, when given) and while `ready`
-/// holds, call `on_change` once.
+/// holds, call `on_change` once. With `poll`, `on_change` is also due when
+/// that long has passed since the start or the last call without one (and
+/// still waits for `ready`).
 fn run_debounced(
     events: Receiver<notify::Result<Event>>,
     stop: Arc<AtomicBool>,
     mut is_change: impl FnMut(&Event) -> bool,
     ready: impl Fn() -> bool,
     max_wait: Option<Duration>,
+    poll: Option<Duration>,
     on_change: impl Fn(),
 ) {
     let mut phase = Phase::Idle;
+    let mut next_poll = poll.map(|every| Instant::now() + every);
     loop {
         if stop.load(Ordering::SeqCst) {
             return;
@@ -521,9 +615,10 @@ fn run_debounced(
             }
             on_change();
             phase = Phase::Idle;
+            next_poll = poll.map(|every| Instant::now() + every);
             continue;
         }
-        let received = match wait_timeout(phase) {
+        let received = match wait_timeout(phase, next_poll) {
             Some(timeout) => events.recv_timeout(timeout),
             None => events.recv().map_err(|_| RecvTimeoutError::Disconnected),
         };
@@ -545,13 +640,19 @@ fn run_debounced(
             }
             // An error inside the stream is not fatal: the next event still works.
             Ok(Err(_)) => {}
-            Err(RecvTimeoutError::Timeout) => {
-                if let Phase::Quiet { until, deadline } = phase {
+            Err(RecvTimeoutError::Timeout) => match phase {
+                Phase::Quiet { until, deadline } => {
                     if Instant::now() >= fires_at(until, deadline) {
                         phase = Phase::WaitingForLocks;
                     }
                 }
-            }
+                Phase::Idle => {
+                    if next_poll.is_some_and(|at| Instant::now() >= at) {
+                        phase = Phase::WaitingForLocks;
+                    }
+                }
+                Phase::WaitingForLocks => {}
+            },
             Err(RecvTimeoutError::Disconnected) => return,
         }
     }
@@ -886,10 +987,233 @@ mod tests {
         assert!(error.to_string().contains("ermission denied"), "{error}");
     }
 
+    /// A config folder that is a link to the real one, as with dotfiles kept
+    /// elsewhere: `tmp/real` and `tmp/cfg -> real`.
+    #[cfg(unix)]
+    fn linked_config_paths(tmp: &TempDir) -> (ClaudePaths, PathBuf) {
+        let real = tmp.path().join("real");
+        fs::create_dir(&real).unwrap();
+        let config = tmp.path().join("cfg");
+        std::os::unix::fs::symlink(&real, &config).unwrap();
+        (ClaudePaths::for_config_dir(&config, tmp.path()), real)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_login_named_by_its_real_path_is_the_login() {
+        let tmp = TempDir::new().unwrap();
+        let (paths, real) = linked_config_paths(&tmp);
+        let names = WatchedNames::of(&paths).unwrap();
+        // macOS reports the real path; tempdirs there sit under the /var link too.
+        let real = fs::canonicalize(&real).unwrap();
+        assert!(names.is_watched(&paths.credentials_file));
+        assert!(names.is_watched(&real.join(".credentials.json")));
+        assert!(names.is_watched(&real.join(".claude.json")));
+        assert!(!names.is_watched(&real.join("settings.json")));
+        let real_tmp = fs::canonicalize(tmp.path()).unwrap();
+        assert!(
+            !names.is_watched(&real_tmp.join(".claude.json")),
+            "the parent's file of the same name is not the login"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_missing_folder_named_by_its_real_parent_touches_the_layout() {
+        let tmp = TempDir::new().unwrap();
+        let link = tmp.path().join("home");
+        std::os::unix::fs::symlink(tmp.path(), &link).unwrap();
+        let folder = link.join("work").join("cfg");
+        let layout = Layout {
+            spellings: spellings_of(std::slice::from_ref(&folder)),
+            folders: vec![folder],
+            watched: Vec::new(),
+            backend: Arc::new(Mutex::new(None)),
+            state: Arc::new(Mutex::new(WatchState::NotSetUp)),
+        };
+        let real_tmp = fs::canonicalize(tmp.path()).unwrap();
+        let about = |path: PathBuf| {
+            Event::new(EventKind::Create(notify::event::CreateKind::Folder)).add_path(path)
+        };
+        assert!(layout.touches(&about(link.join("work"))));
+        assert!(layout.touches(&about(real_tmp.join("work"))));
+        assert!(layout.touches(&about(real_tmp.join("work").join("cfg"))));
+        assert!(!layout.touches(&about(real_tmp.join("other"))));
+        assert!(!layout.touches(&about(real_tmp.join("work").join("cfg2"))));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_config_folder_is_watched_through_the_link() {
+        let tmp = TempDir::new().unwrap();
+        let (paths, _real) = linked_config_paths(&tmp);
+        let (watcher, count, received) = watched(&paths);
+        assert_eq!(watcher.state(), WatchState::Watching);
+
+        atomic::write_atomic(&paths.credentials_file, b"{}", atomic::Access::Private).unwrap();
+        expect_one(&received, &count);
+        drop(watcher);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_config_folder_whose_target_goes_is_followed() {
+        let tmp = TempDir::new().unwrap();
+        let (paths, real) = linked_config_paths(&tmp);
+        let (watcher, _count, received) = watched(&paths);
+        assert_eq!(watcher.state(), WatchState::Watching);
+
+        fs::remove_dir(&real).unwrap();
+        expect_some(&received, "the link's target was removed");
+        assert_eq!(watcher.state(), WatchState::NotSetUp);
+        drop(watcher);
+    }
+
     #[test]
     fn idle_waits_without_a_timeout() {
-        assert_eq!(wait_timeout(Phase::Idle), None);
-        assert_eq!(wait_timeout(Phase::WaitingForLocks), Some(BUSY_RECHECK));
+        assert_eq!(wait_timeout(Phase::Idle, None), None);
+        assert_eq!(
+            wait_timeout(Phase::WaitingForLocks, None),
+            Some(BUSY_RECHECK)
+        );
+    }
+
+    #[test]
+    fn idle_with_a_poll_waits_until_the_poll_is_due() {
+        let timeout = wait_timeout(Phase::Idle, Some(Instant::now() + KEYCHAIN_POLL)).unwrap();
+        assert!(timeout <= KEYCHAIN_POLL && timeout > KEYCHAIN_POLL - Duration::from_secs(1));
+        let overdue = Instant::now()
+            .checked_sub(Duration::from_millis(5))
+            .unwrap();
+        assert_eq!(
+            wait_timeout(Phase::Idle, Some(overdue)),
+            Some(Duration::ZERO)
+        );
+    }
+
+    /// The login watch's loop on its own thread, fed by a channel the test
+    /// holds, so no file event (and no FSEvents) is involved. `on_change`
+    /// sends on the returned receiver.
+    struct PolledLoop {
+        stop: Arc<AtomicBool>,
+        events: Option<mpsc::Sender<notify::Result<Event>>>,
+        thread: Option<JoinHandle<()>>,
+    }
+
+    impl PolledLoop {
+        fn start(paths: &ClaudePaths, every: Duration) -> (PolledLoop, Receiver<()>) {
+            let (events, received_events) = mpsc::channel();
+            let (calls, received) = mpsc::channel();
+            let stop = Arc::new(AtomicBool::new(false));
+            let layout = Layout {
+                folders: Vec::new(),
+                watched: Vec::new(),
+                spellings: Vec::new(),
+                backend: Arc::new(Mutex::new(None)),
+                state: Arc::new(Mutex::new(WatchState::Watching)),
+            };
+            let names = WatchedNames::of(paths).unwrap();
+            let thread_paths = paths.clone();
+            let thread_stop = Arc::clone(&stop);
+            let thread = thread::spawn(move || {
+                run(
+                    received_events,
+                    thread_stop,
+                    thread_paths,
+                    names,
+                    layout,
+                    every,
+                    move || {
+                        let _ = calls.send(());
+                    },
+                )
+            });
+            let polled = PolledLoop {
+                stop,
+                events: Some(events),
+                thread: Some(thread),
+            };
+            (polled, received)
+        }
+    }
+
+    impl Drop for PolledLoop {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::SeqCst);
+            drop(self.events.take());
+            if let Some(thread) = self.thread.take() {
+                thread.join().unwrap();
+            }
+        }
+    }
+
+    /// A Keychain login that nothing here reads: the loop only calls back.
+    fn with_keychain_login(mut paths: ClaudePaths, tmp: &TempDir) -> ClaudePaths {
+        paths.login_keychain = Some(crate::paths::KeychainItem {
+            service: "seatswap-test-credentials-poll".to_string(),
+            account: "sam".to_string(),
+            keychain: Some(tmp.path().join("never-used.keychain-db")),
+        });
+        paths
+    }
+
+    const SHORT_POLL: Duration = Duration::from_millis(30);
+
+    #[test]
+    fn a_keychain_login_is_polled() {
+        let tmp = TempDir::new().unwrap();
+        let paths = with_keychain_login(config_paths(&tmp), &tmp);
+        let (polled, received) = PolledLoop::start(&paths, SHORT_POLL);
+        for call in 1..=3 {
+            received
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap_or_else(|_| panic!("poll {call} did not call on_change"));
+        }
+        drop(polled);
+    }
+
+    #[test]
+    fn a_file_login_is_not_polled() {
+        let tmp = TempDir::new().unwrap();
+        let paths = config_paths(&tmp);
+        assert_eq!(paths.login_keychain, None);
+        let (polled, received) = PolledLoop::start(&paths, SHORT_POLL);
+        assert!(
+            received.recv_timeout(SHORT_POLL * 10).is_err(),
+            "a file login is noticed by events only"
+        );
+        drop(polled);
+    }
+
+    #[test]
+    fn a_keychain_poll_waits_for_claude_codes_locks() {
+        let tmp = TempDir::new().unwrap();
+        let paths = with_keychain_login(config_paths(&tmp), &tmp);
+        let lock = paths.refresh_lock();
+        fs::create_dir(&lock).unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let heartbeat_stop = Arc::clone(&stop);
+        let heartbeat_lock = lock.clone();
+        let heartbeat = thread::spawn(move || {
+            while !heartbeat_stop.load(Ordering::SeqCst) {
+                let _ = filetime::set_file_mtime(&heartbeat_lock, filetime::FileTime::now());
+                thread::sleep(Duration::from_millis(50));
+            }
+        });
+
+        let (polled, received) = PolledLoop::start(&paths, SHORT_POLL);
+        assert!(
+            received.recv_timeout(SHORT_POLL * 10).is_err(),
+            "no poll may call on_change while Claude Code renews the login"
+        );
+
+        stop.store(true, Ordering::SeqCst);
+        heartbeat.join().unwrap();
+        fs::remove_dir(&lock).unwrap();
+        received
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the poll must run once the lock is gone");
+        drop(polled);
     }
 
     #[test]

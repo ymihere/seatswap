@@ -2,7 +2,7 @@
 
 [![Licence: MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
 
-A tray app and command line tool for Linux and Windows that switches
+A tray app and command line tool for Linux, Windows and macOS that switches
 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) between several Claude accounts with
 one click. Only the login is swapped. Your `~/.claude` (on Windows `%USERPROFILE%\.claude`) stays
 the same for every account: memory, skills, plugins, hooks, settings and history are shared.
@@ -52,9 +52,10 @@ Built and used daily on **Linux Mint 22 Cinnamon (X11)**. On **Windows 11** vers
 checked by hand on 2026-11-18: the tray icon and pop-up, a switch that a running Claude Code session
 follows, the notifications, start at login, settings shared with a Linux machine, the status line
 and the Sessions area all work (Claude Code keeps its login in the same file there). The parts new in
-1.3 and 1.4 pass their tests on Windows but have not run on a Windows desktop yet. macOS is not
-supported yet: Claude Code keeps its login in the Keychain there, and seatswap does not read or
-write that yet.
+1.3 and 1.4 pass their tests on Windows but have not run on a Windows desktop yet. **macOS** is
+new: seatswap reads and writes Claude Code's login in the Keychain there, and the tests and a switch
+by the command line ran on macOS 26 (Apple silicon), but it is not used daily yet and a switch that
+a running Claude Code session follows has not been tried on a Mac.
 
 ## Features
 
@@ -188,6 +189,18 @@ login" starts the `seatswap-tray.exe` next to the program you ran. The programs 
 so Windows may ask before the first start. They need the WebView2 runtime, which Windows 11
 has; on Windows 10 install it from Microsoft if the pop-up does not open.
 
+**Prebuilt (macOS, Apple silicon):** download `seatswap-<version>-aarch64-macos.tar.gz` from the
+[releases](https://github.com/ymihere/seatswap/releases), then:
+
+```sh
+tar xzf seatswap-*-aarch64-macos.tar.gz
+install -m 0755 seatswap-*/seatswap ~/.local/bin/
+xattr -d com.apple.quarantine ~/.local/bin/seatswap   # only if a browser downloaded it
+```
+
+The program is not signed or notarized, so macOS refuses to open a copy a browser downloaded until
+the quarantine mark is removed (the last line). On an Intel Mac, build from source.
+
 **From source:** you need Rust ≥ 1.91
 ([rustup](https://rustup.rs)) and, on Linux, the libraries Tauri needs. On Debian, Ubuntu and
 Mint:
@@ -207,7 +220,8 @@ install -m 0755 target/release/seatswap ~/.local/bin/
 ```
 
 On Windows the same `cargo build` (with Rust's default MSVC toolchain) leaves `seatswap.exe` and
-`seatswap-tray.exe` in `target\release`; copy both into one folder.
+`seatswap-tray.exe` in `target\release`; copy both into one folder. macOS needs nothing besides
+Rust and the Xcode command line tools (`xcode-select --install`).
 
 Only the command line, without the tray: `cargo build --release -p seatswap --no-default-features`.
 
@@ -219,8 +233,9 @@ Only the command line, without the tray: `cargo build --release -p seatswap --no
   pop-up, and the icon appears once a tray does.
 - **Windows:** start `seatswap-tray.exe`. Windows puts a new tray icon into the overflow area
   behind the `^` arrow next to the clock; drag it onto the taskbar to keep it in view.
+- **macOS:** start it with `seatswap`. The icon appears in the menu bar; seatswap has no Dock icon.
 
-On both, seatswap adds itself to the programs started at login (switch it off under
+On every system, seatswap adds itself to the programs started at login (switch it off under
 *Settings → Start at login*).
 
 ## Getting started
@@ -365,11 +380,22 @@ the tray app, and `seatswap.exe` for everything you want to read in a terminal.
 - **What changes on a switch:** only the login entries in `~/.claude/.credentials.json` and the
   `oauthAccount` entry in `~/.claude.json` (on Windows both are under `%USERPROFILE%`). Every
   other key in those files is kept exactly as it was, in the same order.
+- **On macOS** Claude Code keeps the login in the login Keychain, not in `.credentials.json`: the
+  item `Claude Code-credentials` (with a config folder other than `~/.claude`,
+  `Claude Code-credentials-` and the first 8 hex digits of the folder path's SHA-256), account
+  `$USER`. seatswap reads and updates that item in place with `/usr/bin/security`, the program
+  Claude Code uses itself, so macOS asks nothing and Claude Code keeps its access. The value goes
+  to `security` on its standard input; only a login too long for one `security -i` line (about
+  4 KB) is passed on the command line, as Claude Code does. A Claude Code that falls back to
+  `.credentials.json` on a Mac: start seatswap with `SEATSWAP_CLAUDE_LOGIN=file`
+  (`keychain` is the default there; on Linux and Windows only `file` is allowed).
 - **One backup:** before seatswap writes to one of these two files for the first time, it keeps a
   copy next to it, named `<file>.seatswap-backup`. The copy contains the login of that moment and
-  is never updated.
+  is never updated. On macOS the copy of the Keychain login is the item
+  `<service>.seatswap-backup` beside it.
 - **Where stored logins live:** the saved Claude logins and the saved Codex logins are in your
-  system keyring (Secret Service on Linux, Credential Manager on Windows). If no keyring is available, in files in the data folder, and the pop-up
+  system keyring (Secret Service on Linux, Credential Manager on Windows, the login Keychain on
+  macOS, where a new build may ask once to *Always Allow* its own entries). If no keyring is available, in files in the data folder, and the pop-up
   says so. On Linux those files have mode `0600`; on Windows they are protected only by the
   permissions of your user folder. On Windows, Codex logins are always private files in the
   `secrets` folder, because one does not fit a single Credential Manager entry.
@@ -445,7 +471,7 @@ Whether using a subscription login this way is within Anthropic's terms is for y
 | Wayland sessions | Expected to work; the pop-up is centred, the compositor places it |
 | Windows 11 | **Checked by hand with 1.2.2** on 2026-11-18: tray icon, pop-up, a switch a running session follows, notifications, start at login, shared settings, status line, Sessions. The parts new in 1.3 and 1.4 pass their tests there but have not run on a desktop yet; Codex logins are now private files in seatswap's `secrets` folder. `seatswap.exe` is the CLI, `seatswap-tray.exe` the same program without a console window (autostart, Start menu). Works while Claude Code keeps its login in `.credentials.json`; a newer Claude Code can move it into Windows Credential Manager, which is not supported yet |
 | Windows 10 (1803 or later) | Expected to work; not run yet |
-| macOS | Not yet: needs Keychain support for Claude Code's login |
+| macOS 26 (Apple silicon) | **New**: Claude Code's login in the Keychain, running sessions (through `ps`), notifications, the menu-bar icon without a Dock icon, start at login (a LaunchAgent). The tests pass and a switch by the command line ran end to end on 2026-11-21; a switch that a running Claude Code session follows and the tray app in daily use are not checked yet. Release build for Apple silicon only; not signed or notarized |
 
 ## Development
 

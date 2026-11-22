@@ -528,8 +528,9 @@ fn click(response: &NotificationResponse, button: &str) -> Option<Click> {
 ///
 /// A Linux notification service reports a click on the body only as the action
 /// `default`, and only when the notification announces that action (it shows no
-/// button for it). Windows reports a body click by itself and would draw a
-/// button for the action, so it is announced on Linux only.
+/// button for it). Windows and macOS report a body click by themselves and
+/// would draw a button for the action (on macOS a second action even turns the
+/// buttons into a drop-down), so it is announced on Linux only.
 fn clickable(paths: &AppPaths) -> DesktopNotification {
     let mut notification = base(paths);
     if cfg!(all(unix, not(target_os = "macos"))) {
@@ -728,9 +729,11 @@ pub(crate) fn send_waiting(
     }
 }
 
-/// On Windows a toast follows the system's rules: it is shown once, may time
-/// out, and the pop-up keeps the count (spec §4.1).
-#[cfg(windows)]
+/// On Windows a toast, and on macOS a notification, follows the system's
+/// rules: it is shown once, may time out, and the pop-up keeps the count
+/// (spec §4.1). notify-rust 4.19's macOS handle has no id and no close, like
+/// its Windows one, and reports a click on the body by itself.
+#[cfg(any(windows, target_os = "macos"))]
 pub(crate) fn send_waiting(
     paths: &AppPaths,
     waiting: &Waiting,
@@ -795,9 +798,10 @@ impl WaitingHandle {
                 close_by_id(id, &self.paths);
             }
         }
-        // Windows removes toasts by its own rules; notify-rust 4.19 gives no
-        // id on its Windows handle, so there is nothing to close there.
-        #[cfg(windows)]
+        // Windows and macOS remove notifications by their own rules;
+        // notify-rust 4.19 gives no id on its handle there, so there is
+        // nothing to close.
+        #[cfg(any(windows, target_os = "macos"))]
         let _ = self;
     }
 }

@@ -6,6 +6,27 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- macOS support. Claude Code keeps its login in the Keychain there; seatswap reads and updates
+  that item (`Claude Code-credentials`, or its hashed name for another config folder) in place
+  with `/usr/bin/security`, as Claude Code does, so macOS asks nothing and Claude Code keeps its
+  access. The first write keeps a copy in `<service>.seatswap-backup`. The Keychain cannot be
+  watched, so the tray app also looks at the login every 30 s.
+- `SEATSWAP_CLAUDE_LOGIN=file` keeps the login in `.credentials.json` on macOS too, for a Claude
+  Code that falls back to that file; `keychain` (macOS only) names the default there.
+- macOS: running Claude Code sessions are told by `ps` (the start time Claude Code writes), the
+  host name is the Bonjour name (`scutil --get LocalHostName`), the tray app has no Dock icon, and
+  start at login is a LaunchAgent in `~/Library/LaunchAgents`.
+- Releases include `seatswap-<version>-aarch64-macos.tar.gz` (Apple silicon, not signed), and CI
+  runs on macOS.
+
+### Fixed
+
+- The login watch noticed nothing when it saw a folder by another name: macOS reports the real
+  path (`/private/var/…` for `/var/…`, the target of a linked config folder).
+- Clippy 1.95 warnings (`drop` of values without `Drop`, a negated `is_some`).
+
 ## [1.4.5] - 2026-11-21
 
 ### Changed
@@ -647,7 +668,7 @@ All notable changes to this project are documented here. The format follows
   starts later): it says so and shows the icon as soon as a tray appears; `seatswap panel` opens
   the pop-up meanwhile.
 
-[Unreleased]: https://github.com/ymihere/seatswap/compare/v1.4.4...HEAD
+[Unreleased]: https://github.com/ymihere/seatswap/compare/v1.4.5...HEAD
 [1.4.5]: https://github.com/ymihere/seatswap/compare/v1.4.4...v1.4.5
 [1.4.4]: https://github.com/ymihere/seatswap/compare/v1.4.3...v1.4.4
 [1.4.3]: https://github.com/ymihere/seatswap/compare/v1.4.2...v1.4.3

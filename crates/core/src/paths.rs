@@ -41,6 +41,10 @@ pub enum PathsError {
     },
     #[error("Dropbox's info file {path}: {detail}")]
     DropboxInfo { path: PathBuf, detail: String },
+    #[error("$USER is not set; Claude Code names its Keychain login after it")]
+    NoUser,
+    #[error("{LOGIN_STORE_VARIABLE}: {0}")]
+    LoginStore(String),
 }
 
 /// Claude Code's files for one config folder.
@@ -57,21 +61,76 @@ pub struct ClaudePaths {
     /// `.claude.json`: the account identity (`oauthAccount`) and much else.
     /// `~/.claude.json` for the default folder, `<config_dir>/.claude.json` otherwise.
     pub identity_file: PathBuf,
+    /// Some on macOS when resolved from the real environment: the live login is this
+    /// Keychain item and `credentials_file` is not used for it. None: the file.
+    pub login_keychain: Option<KeychainItem>,
+}
+
+/// Claude Code's login on macOS: one generic-password item (spec §2.2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeychainItem {
+    pub service: String,
+    pub account: String,
+    /// The keychain file; None = the user's default keychain. Tests always name a throw-away keychain.
+    pub keychain: Option<PathBuf>,
+}
+
+impl KeychainItem {
+    /// Claude Code's item for `config_dir` and the user name `user` (default keychain).
+    ///
+    /// The service is `Claude Code-credentials` for the default folder and
+    /// `Claude Code-credentials-<h>` for any other, where `<h>` is the first 8
+    /// lowercase hex characters of the SHA-256 of the folder path as given (its
+    /// bytes, not normalized). "Default" is decided exactly as for
+    /// [`ClaudePaths::identity_file`]: `config_dir == home.join(".claude")`.
+    /// Claude Code itself asks whether `CLAUDE_CONFIG_DIR` is set, so a
+    /// `CLAUDE_CONFIG_DIR` that names `~/.claude` itself is the one case where
+    /// the two can differ.
+    pub fn for_config_dir(config_dir: &Path, home: &Path, user: &str) -> KeychainItem {
+        use sha2::{Digest, Sha256};
+        let service = if config_dir == home.join(".claude") {
+            "Claude Code-credentials".to_string()
+        } else {
+            let digest = Sha256::digest(config_dir.as_os_str().as_encoded_bytes());
+            let short: String = digest[..4]
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+            format!("Claude Code-credentials-{short}")
+        };
+        KeychainItem {
+            service,
+            account: user.to_string(),
+            keychain: None,
+        }
+    }
 }
 
 impl ClaudePaths {
     /// Resolve from the real environment: `explicit` (the `claudeConfigDir`
     /// setting) wins, then a non-empty `$CLAUDE_CONFIG_DIR`, then `~/.claude`.
+    ///
+    /// The live login is where [`LOGIN_STORE_VARIABLE`] says
+    /// ([`login_store`]): on macOS by default Claude Code's Keychain item for
+    /// that folder under the name `$USER` (spec §2.2), elsewhere the file.
+    /// Never called by tests: with the Keychain, even a temporary folder names
+    /// an item in the user's real default keychain.
     pub fn resolve(explicit: Option<&Path>) -> Result<ClaudePaths, PathsError> {
         let home = dirs::home_dir().ok_or(PathsError::NoHome)?;
-        Ok(Self::resolve_with(
-            explicit,
-            std::env::var_os("CLAUDE_CONFIG_DIR"),
-            &home,
-        ))
+        let mut paths = Self::resolve_with(explicit, std::env::var_os("CLAUDE_CONFIG_DIR"), &home);
+        let store = login_store(
+            std::env::var_os(LOGIN_STORE_VARIABLE).as_deref(),
+            cfg!(target_os = "macos"),
+        )?;
+        if store == LoginStore::Keychain {
+            paths.login_keychain = Some(live_login_keychain(&paths.config_dir, &home)?);
+        }
+        Ok(paths)
     }
 
-    /// Same as [`resolve`](Self::resolve) without reading the process environment (for tests).
+    /// Same as [`resolve`](Self::resolve) without reading the process
+    /// environment (for tests). The live login is always the file
+    /// (`login_keychain` is None).
     pub fn resolve_with(
         explicit: Option<&Path>,
         env_config_dir: Option<OsString>,
@@ -86,7 +145,8 @@ impl ClaudePaths {
     }
 
     /// The files of a given config folder. Claude Code keeps `.claude.json` next
-    /// to the default folder (`~/.claude.json`) and inside any other one.
+    /// to the default folder (`~/.claude.json`) and inside any other one. The
+    /// live login is the file (`login_keychain` is None).
     pub fn for_config_dir(config_dir: &Path, home: &Path) -> ClaudePaths {
         let identity_file = if config_dir == home.join(".claude") {
             home.join(".claude.json")
@@ -98,6 +158,7 @@ impl ClaudePaths {
             home: home.to_path_buf(),
             credentials_file: config_dir.join(".credentials.json"),
             identity_file,
+            login_keychain: None,
         }
     }
 
@@ -163,6 +224,54 @@ impl ClaudePaths {
     pub fn skills_dir(&self) -> PathBuf {
         self.config_dir.join("skills")
     }
+}
+
+/// The variable that says where Claude Code's live login is: unset or empty
+/// for the system's own place (macOS: the Keychain; Linux, Windows: the file),
+/// `file` for `.credentials.json` on every system (Claude Code on macOS falls
+/// back to that file when it cannot use the Keychain; the CLI's integration
+/// tests use it), `keychain` for the Keychain (macOS only).
+pub const LOGIN_STORE_VARIABLE: &str = "SEATSWAP_CLAUDE_LOGIN";
+
+/// Where the live login is kept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LoginStore {
+    File,
+    Keychain,
+}
+
+/// [`LOGIN_STORE_VARIABLE`]'s value read as a [`LoginStore`]. `macos` says
+/// whether this is macOS (a parameter so every system tests both answers).
+/// Any other value, and `keychain` off macOS, is
+/// [`PathsError::LoginStore`].
+fn login_store(value: Option<&OsStr>, macos: bool) -> Result<LoginStore, PathsError> {
+    let default = if macos {
+        LoginStore::Keychain
+    } else {
+        LoginStore::File
+    };
+    let Some(value) = value.filter(|value| !value.is_empty()) else {
+        return Ok(default);
+    };
+    match value.to_str() {
+        Some("file") => Ok(LoginStore::File),
+        Some("keychain") if macos => Ok(LoginStore::Keychain),
+        Some("keychain") => Err(PathsError::LoginStore(
+            "keychain works on macOS only".to_string(),
+        )),
+        _ => Err(PathsError::LoginStore(format!(
+            "it must be file or keychain, got {}",
+            value.to_string_lossy()
+        ))),
+    }
+}
+
+/// Claude Code's Keychain item for `config_dir` under the name `$USER` (the
+/// variable [`user_name`] reads on macOS; missing or empty is
+/// [`PathsError::NoUser`]). Reached on macOS only ([`login_store`]).
+fn live_login_keychain(config_dir: &Path, home: &Path) -> Result<KeychainItem, PathsError> {
+    let user = user_name().map_err(|_| PathsError::NoUser)?;
+    Ok(KeychainItem::for_config_dir(config_dir, home, &user))
 }
 
 /// Codex's login file and the two locks Codex takes to write it (spec §7.2, R8).
@@ -612,7 +721,8 @@ fn dropbox_info_files() -> Result<Vec<PathBuf>, PathsError> {
 }
 
 /// The name this host writes its history under: `explicit` if set, else the
-/// machine's host name (Linux: /proc/sys/kernel/hostname; Windows: %COMPUTERNAME%).
+/// machine's host name (Linux: /proc/sys/kernel/hostname; macOS: the Bonjour
+/// name from `scutil --get LocalHostName`; Windows: %COMPUTERNAME%).
 /// 1..=63 characters of [A-Za-z0-9._-] whose first character is a letter or a
 /// digit; anything else is [`PathsError::HostName`] with the text "set hostName
 /// in the settings". The first character rules out `.` and `..`, which would
@@ -674,7 +784,57 @@ fn machine_host_name() -> Result<String, PathsError> {
     })
 }
 
-#[cfg(not(any(target_os = "linux", windows)))]
+/// macOS: the Bonjour local host name the person sets in System Settings →
+/// General → Sharing. Not `gethostname`/`uname`, which on a Mac follow the
+/// network (DHCP names, `.local`) and would move this host's history folder.
+#[cfg(target_os = "macos")]
+fn machine_host_name() -> Result<String, PathsError> {
+    let output = std::process::Command::new(SCUTIL)
+        .args(["--get", "LocalHostName"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| {
+            PathsError::HostName(format!(
+                "cannot run {SCUTIL} to read the machine's host name: {e}"
+            ))
+        })?;
+    local_host_name(output.status.success(), &output.stdout, &output.stderr)
+}
+
+#[cfg(any(target_os = "macos", test))]
+const SCUTIL: &str = "/usr/sbin/scutil";
+
+/// The name in the output of `scutil --get LocalHostName`: its one line
+/// without the line end. A failed run (scutil prints `LocalHostName: not set`
+/// when there is none) or an empty name is an error naming what scutil said;
+/// [`host_name`] puts the name in lower case and checks its characters.
+#[cfg(any(target_os = "macos", test))]
+fn local_host_name(success: bool, stdout: &[u8], stderr: &[u8]) -> Result<String, PathsError> {
+    let said = |bytes: &[u8]| String::from_utf8_lossy(bytes).trim().to_string();
+    if !success {
+        let message = [said(stderr), said(stdout)]
+            .into_iter()
+            .find(|text| !text.is_empty())
+            .unwrap_or_else(|| "no output".to_string());
+        return Err(PathsError::HostName(format!(
+            "{SCUTIL} --get LocalHostName failed: {message}"
+        )));
+    }
+    let text = std::str::from_utf8(stdout).map_err(|_| {
+        PathsError::HostName(format!(
+            "{SCUTIL} --get LocalHostName gave a name that is not UTF-8"
+        ))
+    })?;
+    let name = text.strip_suffix('\n').unwrap_or(text);
+    if name.is_empty() {
+        return Err(PathsError::HostName(format!(
+            "{SCUTIL} --get LocalHostName gave no name"
+        )));
+    }
+    Ok(name.to_string())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn machine_host_name() -> Result<String, PathsError> {
     Err(PathsError::HostName(
         "the machine's host name cannot be read on this system".to_string(),
@@ -736,9 +896,31 @@ pub fn runtime_dir() -> Option<PathBuf> {
 }
 
 /// The autostart desktop file the GUI writes with [`crate::atomic::write_atomic`]
-/// (spec §9.4, §10).
+/// (spec §9.4, §10). Linux; macOS uses [`launch_agent_file`].
 pub fn autostart_file(xdg_config_home: &Path) -> PathBuf {
     xdg_config_home.join("autostart").join("seatswap.desktop")
+}
+
+/// The label of the macOS LaunchAgent that starts the tray app at login: the
+/// Tauri identifier (`crates/app/tauri.conf.json`), which also names its file.
+pub const LAUNCH_AGENT_LABEL: &str = "dev.seatswap.app";
+
+/// The per-user LaunchAgent the GUI writes on macOS with
+/// [`crate::atomic::write_atomic`] for "Start at login"
+/// (`<home>/Library/LaunchAgents/dev.seatswap.app.plist`). launchd reads that
+/// folder at the next login.
+pub fn launch_agent_file(home: &Path) -> PathBuf {
+    home.join("Library")
+        .join("LaunchAgents")
+        .join(format!("{LAUNCH_AGENT_LABEL}.plist"))
+}
+
+/// [`launch_agent_file`] in this user's home folder. Only macOS has one; tests
+/// pass a home folder to [`launch_agent_file`] instead and never call this.
+#[cfg(target_os = "macos")]
+pub fn user_launch_agent_file() -> Result<PathBuf, PathsError> {
+    let home = dirs::home_dir().ok_or(PathsError::NoHome)?;
+    Ok(launch_agent_file(&home))
 }
 
 /// The Linux menu entry the tray app writes at start
@@ -814,12 +996,141 @@ mod tests {
     }
 
     #[test]
+    fn the_local_host_name_is_scutils_line() {
+        assert_eq!(
+            local_host_name(true, b"Sams-MacBook-Pro\n", b"").unwrap(),
+            "Sams-MacBook-Pro"
+        );
+        assert_eq!(local_host_name(true, b"atlas", b"").unwrap(), "atlas");
+        // host_name then puts it in lower case and checks its characters.
+        let name = local_host_name(true, b"Sams-MacBook-Pro\n", b"").unwrap();
+        assert_eq!(host_name(Some(&name)).unwrap(), "sams-macbook-pro");
+    }
+
+    #[test]
+    fn a_missing_local_host_name_is_an_error_naming_scutil() {
+        for (success, stdout, stderr, said) in [
+            (
+                false,
+                &b"LocalHostName: not set\n"[..],
+                &b""[..],
+                "failed: LocalHostName: not set",
+            ),
+            (
+                false,
+                b"",
+                b"scutil: permission denied\n",
+                "failed: scutil: permission denied",
+            ),
+            (false, b"", b"", "failed: no output"),
+            (true, b"\n", b"", "gave no name"),
+            (true, b"", b"", "gave no name"),
+            (true, b"\xff\xfe\n", b"", "not UTF-8"),
+        ] {
+            let error = local_host_name(success, stdout, stderr).unwrap_err();
+            let text = error.to_string();
+            assert!(matches!(error, PathsError::HostName(_)), "{text}");
+            assert!(
+                text.contains("/usr/sbin/scutil --get LocalHostName"),
+                "{text}"
+            );
+            assert!(text.contains(said), "{text}");
+            assert!(text.ends_with("; set hostName in the settings"), "{text}");
+        }
+    }
+
+    #[test]
     fn the_user_name_is_the_environments_variable() {
         let variable = if cfg!(windows) { "USERNAME" } else { "USER" };
         match std::env::var(variable) {
             Ok(name) if !name.is_empty() => assert_eq!(user_name().unwrap(), name),
             _ => assert_eq!(user_name().unwrap_err(), format!("{variable} is not set")),
         }
+    }
+
+    #[test]
+    fn the_login_store_defaults_to_the_keychain_on_macos_only() {
+        for value in [None, Some(OsStr::new(""))] {
+            assert_eq!(login_store(value, true).unwrap(), LoginStore::Keychain);
+            assert_eq!(login_store(value, false).unwrap(), LoginStore::File);
+        }
+    }
+
+    #[test]
+    fn the_login_store_variable_names_file_or_keychain() {
+        let file = Some(OsStr::new("file"));
+        let keychain = Some(OsStr::new("keychain"));
+        assert_eq!(login_store(file, true).unwrap(), LoginStore::File);
+        assert_eq!(login_store(file, false).unwrap(), LoginStore::File);
+        assert_eq!(login_store(keychain, true).unwrap(), LoginStore::Keychain);
+        let error = login_store(keychain, false).unwrap_err();
+        assert!(matches!(error, PathsError::LoginStore(_)));
+        assert_eq!(
+            error.to_string(),
+            "SEATSWAP_CLAUDE_LOGIN: keychain works on macOS only"
+        );
+        for other in ["File", "keychain ", "files", "0"] {
+            let error = login_store(Some(OsStr::new(other)), true).unwrap_err();
+            assert!(
+                error.to_string().contains("must be file or keychain"),
+                "{other:?}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_default_folder_uses_the_plain_keychain_service() {
+        let item = KeychainItem::for_config_dir(
+            Path::new("/Users/sam/.claude"),
+            Path::new("/Users/sam"),
+            "sam",
+        );
+        assert_eq!(
+            item,
+            KeychainItem {
+                service: "Claude Code-credentials".to_string(),
+                account: "sam".to_string(),
+                keychain: None,
+            }
+        );
+    }
+
+    #[test]
+    fn another_folder_uses_the_hashed_keychain_service() {
+        // printf %s '/Users/sam/work-claude' | shasum -a 256
+        //   45574e61e5868a5cec013c5c60c6a0c274d66553e7887cf22ac9550dba130550
+        let item = KeychainItem::for_config_dir(
+            Path::new("/Users/sam/work-claude"),
+            Path::new("/Users/sam"),
+            "sam",
+        );
+        assert_eq!(item.service, "Claude Code-credentials-45574e61");
+        assert_eq!(item.account, "sam");
+        assert_eq!(item.keychain, None);
+
+        // `.claude` under another home is not the default folder either.
+        // printf %s '/Users/sam/.claude' | shasum -a 256
+        //   737caf6a474b63167db2345e61780712c82e5f7b17f3bb3bd0e14324d06d7b10
+        let other_home = KeychainItem::for_config_dir(
+            Path::new("/Users/sam/.claude"),
+            Path::new("/Users/max"),
+            "max",
+        );
+        assert_eq!(other_home.service, "Claude Code-credentials-737caf6a");
+    }
+
+    #[test]
+    fn explicitly_built_claude_paths_use_the_credentials_file() {
+        let home = Path::new("/Users/sam");
+        assert_eq!(
+            ClaudePaths::for_config_dir(&home.join(".claude"), home).login_keychain,
+            None
+        );
+        assert_eq!(
+            ClaudePaths::resolve_with(None, Some("/Users/sam/work-claude".into()), home)
+                .login_keychain,
+            None
+        );
     }
 
     #[test]
@@ -1103,6 +1414,14 @@ mod tests {
         assert_eq!(
             app_icon(Path::new("/home/u/.local/share")),
             Path::new("/home/u/.local/share/icons/hicolor/256x256/apps/seatswap.png")
+        );
+    }
+
+    #[test]
+    fn the_launch_agent_lives_in_the_users_launch_agents_folder() {
+        assert_eq!(
+            launch_agent_file(Path::new("/Users/u")),
+            Path::new("/Users/u/Library/LaunchAgents/dev.seatswap.app.plist")
         );
     }
 

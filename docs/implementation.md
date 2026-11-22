@@ -4,7 +4,7 @@ The spec (`docs/spec.md`) says what the program does and why. This file fixes th
 
 Done already (do not rewrite): `types.rs` (`Login`, `OAuthAccount`, `LOGIN_KEYS`), `paths.rs` (`ClaudePaths`, `AppPaths`), `atomic.rs` (`write_atomic`, `backup_once`).
 
-Linux and macOS share the Unix code. The Windows port and its contracts are in `docs/windows.md`; the macOS Keychain is later work.
+Linux and macOS share the Unix code. The Windows port and its contracts are in `docs/windows.md`; the macOS Keychain login is in "live.rs on macOS" below.
 
 ---
 
@@ -666,6 +666,37 @@ pub struct AccountView {
 pub enum LoginWarning { Soon { id: String, days_left: i64 }, Tomorrow { id: String }, Ended { id: String } }
 pub fn login_warnings(views: &[AccountView]) -> Vec<LoginWarning>;
 ```
+
+## live.rs on macOS: the Keychain login (§2.2)
+
+On macOS `ClaudePaths::resolve` sets `login_keychain: Some(KeychainItem)`, and `read_login` /
+`write_login` then read and write that item instead of `credentials_file`, with the same JSON
+merge (unknown keys kept, `LOGIN_KEYS` removed then inserted, corrupt data never overwritten).
+`for_config_dir` and `resolve_with` always give `None`, so every test keeps the file.
+
+```rust
+// paths.rs
+pub struct KeychainItem { pub service: String, pub account: String, pub keychain: Option<PathBuf> }
+impl KeychainItem {
+    /// "Claude Code-credentials" for home/.claude, else "Claude Code-credentials-" + the first
+    /// 8 hex digits of SHA-256(config_dir as given). keychain None = the default keychain.
+    pub fn for_config_dir(config_dir: &Path, home: &Path, user: &str) -> KeychainItem;
+}
+pub const LOGIN_STORE_VARIABLE: &str = "SEATSWAP_CLAUDE_LOGIN"; // unset | "file" | "keychain" (macOS only)
+// PathsError::NoUser ($USER missing), PathsError::LoginStore(String) (any other value)
+```
+
+- `live/keychain.rs` runs `/usr/bin/security` (Claude Code's own program, so its access list
+  covers seatswap): `find-generic-password -a -s -w` to read (exit 44 = no item; hex output is
+  decoded), `add-generic-password -U -a -s -X <hex>` to write. The write line goes to
+  `security -i` on stdin when it is at most `INTERACTIVE_LINE_LIMIT` (4032) bytes; `security -i`
+  splits longer lines (measured: 4096), so a longer value is passed on argv, as Claude Code does.
+  Names holding `"`, `\` or a line break are refused; a named keychain must be an existing absolute
+  file, because `security` quietly uses the default keychain for a missing one.
+- The backup is the item `<service>.seatswap-backup`, written once before the first write.
+- Tests never reach the default keychain: core tests name a throw-away keychain made with
+  `security create-keychain` in a tempdir; the app's `cli::resolve_paths` drops the item under
+  `cfg(test)`; the CLI integration tests run the program with `SEATSWAP_CLAUDE_LOGIN=file`.
 
 ## watcher.rs (§6.4) — wave 3
 

@@ -197,6 +197,9 @@ impl Fixture {
             .arg(&self.config_dir)
             .env("HOME", self.home.path())
             .env_remove("CLAUDE_CONFIG_DIR")
+            // On macOS the login would otherwise be the folder's item in the
+            // user's real default keychain.
+            .env("SEATSWAP_CLAUDE_LOGIN", "file")
             .env_remove("XDG_CONFIG_HOME")
             // A worker's shell has CLAUDECODE=1 and AI_AGENT set; GitHub's has
             // neither. A test that wants an agent sets them itself.

@@ -4,9 +4,18 @@
 //! - Linux: the XDG autostart entry, one small `.desktop` file written through
 //!   `atomic::write_atomic` like every other file seatswap owns;
 //! - Windows: the value `seatswap` under the `Run` key, which starts
-//!   `seatswap-tray.exe` (the program without a console window).
+//!   `seatswap-tray.exe` (the program without a console window);
+//! - macOS: the per-user LaunchAgent `~/Library/LaunchAgents/dev.seatswap.app.plist`
+//!   (`RunAtLoad`, no `KeepAlive`), written through `atomic::write_atomic` only
+//!   when it is missing or differs. launchd reads that folder at the next login,
+//!   so `launchctl` is never run. A file there without the line
+//!   `<!-- X-seatswap-managed=true -->`, or a symbolic link, is not seatswap's
+//!   own: it is never overwritten or removed, and the tray app says so.
+//!
+//! The XDG folder helpers below also serve the Linux menu entry
+//! (`desktop_entry.rs`).
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 use std::ffi::{OsStr, OsString};
 #[cfg(not(windows))]
 use std::fs;
@@ -14,23 +23,28 @@ use std::path::{Path, PathBuf};
 
 #[cfg(not(windows))]
 use seatswap_core::atomic::{self, Access};
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 use seatswap_core::paths::autostart_file;
+#[cfg(target_os = "macos")]
+use seatswap_core::paths::LAUNCH_AGENT_LABEL;
 
 #[cfg(windows)]
 use super::registry;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum AutostartError {
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     #[error("cannot find the user folder: ${variable} and $HOME are not set")]
     NoXdgHome { variable: &'static str },
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     #[error("$HOME is empty or not an absolute path: {0:?}")]
     HomeNotAbsolute(OsString),
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     #[error("the desktop entry cannot hold a line break in {value:?}")]
     LineBreak { value: String },
+    #[cfg(target_os = "macos")]
+    #[error("the LaunchAgent cannot hold the character {character:?} in {value:?}")]
+    NotInPlist { character: char, value: String },
     #[error("autostart argument {0} is not an absolute path")]
     RelativePath(PathBuf),
     #[cfg(not(windows))]
@@ -65,7 +79,7 @@ pub(crate) enum AutostartError {
 /// `$XDG_<kind>_HOME`, else `$HOME/<fallback>`. Following the XDG spec, a
 /// relative or empty `$XDG_<kind>_HOME` is ignored; a `$HOME` that is empty or
 /// relative is an error, never quietly replaced.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn xdg_home_from(
     xdg_home: Option<&OsStr>,
     home: Option<&OsStr>,
@@ -97,7 +111,7 @@ fn xdg_home_from(
 }
 
 /// `$XDG_CONFIG_HOME`, else `~/.config`.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 pub(crate) fn config_home_from(
     xdg_config_home: Option<&OsStr>,
     home: Option<&OsStr>,
@@ -107,7 +121,7 @@ pub(crate) fn config_home_from(
 
 /// `$XDG_DATA_HOME`, else `~/.local/share`: the folder of the Linux menu entry
 /// and its icon.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 pub(crate) fn data_home_from(
     xdg_data_home: Option<&OsStr>,
     home: Option<&OsStr>,
@@ -116,7 +130,7 @@ pub(crate) fn data_home_from(
 }
 
 /// `$XDG_CONFIG_HOME`, else `~/.config` from the process environment.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 pub(crate) fn config_home() -> Result<PathBuf, AutostartError> {
     config_home_from(
         std::env::var_os("XDG_CONFIG_HOME").as_deref(),
@@ -125,7 +139,7 @@ pub(crate) fn config_home() -> Result<PathBuf, AutostartError> {
 }
 
 /// `$XDG_DATA_HOME`, else `~/.local/share` from the process environment.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 pub(crate) fn data_home() -> Result<PathBuf, AutostartError> {
     data_home_from(
         std::env::var_os("XDG_DATA_HOME").as_deref(),
@@ -172,7 +186,7 @@ pub(crate) fn startup_arguments(
 /// quotes, escape `"`, `` ` ``, `$` and `\` inside the quotes, write `%` as
 /// `%%`, and then apply the string escaping (every `\` doubled again, so one
 /// literal backslash ends up as four).
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn quote_argument(argument: &str) -> String {
     let mut quoted = String::with_capacity(argument.len() + 2);
     quoted.push('"');
@@ -192,7 +206,7 @@ fn quote_argument(argument: &str) -> String {
 
 /// Refuse text that holds a line break: in a desktop entry it would end the
 /// line and add a key. The value is named in the error.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn no_line_break(text: &str) -> Result<(), AutostartError> {
     if text.contains(['\n', '\r']) {
         return Err(AutostartError::LineBreak {
@@ -202,7 +216,7 @@ fn no_line_break(text: &str) -> Result<(), AutostartError> {
     Ok(())
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 pub(crate) fn exec_line(exe: &Path, arguments: &[String]) -> Result<String, AutostartError> {
     let mut parts = Vec::with_capacity(arguments.len() + 1);
     let exe = path_text(exe)?;
@@ -217,7 +231,7 @@ pub(crate) fn exec_line(exe: &Path, arguments: &[String]) -> Result<String, Auto
 
 /// Write the autostart entry when `enabled`, remove it otherwise. Removing an
 /// entry that is not there is fine.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 pub(crate) fn apply(
     enabled: bool,
     exe: &Path,
@@ -250,6 +264,162 @@ pub(crate) fn apply(
             source,
         }
     })
+}
+
+/// Whether `path` is a symbolic link, including one whose target is missing.
+/// `symlink_metadata` does not follow the link, so this sees the link itself.
+/// Used by the Linux menu entry and the macOS LaunchAgent.
+#[cfg(not(windows))]
+pub(crate) fn symlink_at(path: &Path) -> std::io::Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => Ok(metadata.file_type().is_symlink()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+/// Whether `bytes` hold a line (split at `\n`) that is exactly `line`: the
+/// marker by which seatswap recognises a file of its own.
+#[cfg(not(windows))]
+pub(crate) fn has_line(bytes: &[u8], line: &[u8]) -> bool {
+    bytes.split(|byte| *byte == b'\n').any(|part| part == line)
+}
+
+/// The line that marks a LaunchAgent as seatswap's own, like the menu entry's
+/// `X-seatswap-managed=true`. A file without it is left alone.
+#[cfg(target_os = "macos")]
+const PLIST_MANAGED_LINE: &str = "<!-- X-seatswap-managed=true -->";
+
+/// What [`apply`] did with the LaunchAgent.
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LaunchAgent {
+    /// Written: it was missing or held another text.
+    Written,
+    /// Already held this text; not touched.
+    Unchanged,
+    /// seatswap's own file, removed.
+    Removed,
+    /// Not there, nothing to remove.
+    Absent,
+    /// A symbolic link or a file without [`PLIST_MANAGED_LINE`]: not
+    /// seatswap's own, neither written nor removed.
+    LeftAlone,
+}
+
+/// `value` as XML character data, with `& < > " '` escaped. A character an XML
+/// 1.0 file cannot hold unchanged (a control character other than tab and line
+/// feed, a carriage return, which a reader turns into a line feed, or U+FFFE
+/// and U+FFFF) is an error, never dropped or replaced: launchd would start
+/// another program or folder.
+#[cfg(target_os = "macos")]
+fn xml_text(value: &str) -> Result<String, AutostartError> {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&apos;"),
+            '\t' | '\n' => escaped.push(character),
+            '\u{0}'..='\u{1f}' | '\u{fffe}' | '\u{ffff}' => {
+                return Err(AutostartError::NotInPlist {
+                    character,
+                    value: value.to_string(),
+                })
+            }
+            other => escaped.push(other),
+        }
+    }
+    Ok(escaped)
+}
+
+/// The LaunchAgent's text: label [`LAUNCH_AGENT_LABEL`], `ProgramArguments`
+/// = `exe` then `arguments`, `RunAtLoad`, and no `KeepAlive`, so quitting the
+/// tray app does not start it again.
+#[cfg(target_os = "macos")]
+pub(crate) fn launch_agent_plist(
+    exe: &Path,
+    arguments: &[String],
+) -> Result<String, AutostartError> {
+    let mut program_arguments = String::new();
+    for argument in std::iter::once(path_text(exe)?).chain(arguments.iter().map(String::as_str)) {
+        program_arguments.push_str("\t\t<string>");
+        program_arguments.push_str(&xml_text(argument)?);
+        program_arguments.push_str("</string>\n");
+    }
+    Ok(format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+         <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+         {PLIST_MANAGED_LINE}\n\
+         <plist version=\"1.0\">\n\
+         <dict>\n\
+         \t<key>Label</key>\n\
+         \t<string>{LAUNCH_AGENT_LABEL}</string>\n\
+         \t<key>ProgramArguments</key>\n\
+         \t<array>\n\
+         {program_arguments}\
+         \t</array>\n\
+         \t<key>RunAtLoad</key>\n\
+         \t<true/>\n\
+         </dict>\n\
+         </plist>\n"
+    ))
+}
+
+/// Enabled: write `agent_file` when it is missing or differs. Not enabled:
+/// remove it (a file that is not there is fine). Either way a symbolic link or
+/// a file without [`PLIST_MANAGED_LINE`] is left alone.
+#[cfg(target_os = "macos")]
+pub(crate) fn apply(
+    enabled: bool,
+    exe: &Path,
+    agent_file: &Path,
+    arguments: &[String],
+) -> Result<LaunchAgent, AutostartError> {
+    let io_error = |source| AutostartError::Io {
+        path: agent_file.to_path_buf(),
+        source,
+    };
+    // Before anything is touched: a program or flag the file cannot hold is an error.
+    let plist = if enabled {
+        Some(launch_agent_plist(exe, arguments)?)
+    } else {
+        None
+    };
+    if symlink_at(agent_file).map_err(io_error)? {
+        return Ok(LaunchAgent::LeftAlone);
+    }
+    let existing = match fs::read(agent_file) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(source) => return Err(io_error(source)),
+    };
+    match (plist, existing) {
+        (None, None) => Ok(LaunchAgent::Absent),
+        (_, Some(existing)) if !has_line(&existing, PLIST_MANAGED_LINE.as_bytes()) => {
+            Ok(LaunchAgent::LeftAlone)
+        }
+        (None, Some(_)) => match fs::remove_file(agent_file) {
+            Ok(()) => Ok(LaunchAgent::Removed),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(LaunchAgent::Absent),
+            Err(source) => Err(io_error(source)),
+        },
+        (Some(plist), Some(existing)) if existing == plist.as_bytes() => Ok(LaunchAgent::Unchanged),
+        (Some(plist), _) => {
+            if let Some(folder) = agent_file.parent() {
+                fs::create_dir_all(folder).map_err(|source| AutostartError::Io {
+                    path: folder.to_path_buf(),
+                    source,
+                })?;
+            }
+            // `write_atomic` gives a new file mode 0644: launchd refuses an
+            // agent that others can write.
+            atomic::write_atomic(agent_file, plist.as_bytes(), Access::Shared).map_err(io_error)?;
+            Ok(LaunchAgent::Written)
+        }
+    }
 }
 
 /// The name of the autostart value under the `Run` key.
@@ -370,10 +540,25 @@ pub(crate) fn apply(
 /// Apply the `startAtLogin` setting with the executable and flags of this run.
 pub(crate) fn apply_autostart(enabled: bool, arguments: &[String]) -> Result<(), String> {
     let exe = running_program()?;
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let config_home = config_home().map_err(|error| error.to_string())?;
         apply(enabled, &exe, &config_home, arguments).map_err(|error| error.to_string())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let agent_file =
+            seatswap_core::paths::user_launch_agent_file().map_err(|error| error.to_string())?;
+        let done =
+            apply(enabled, &exe, &agent_file, arguments).map_err(|error| error.to_string())?;
+        // The same line the Linux menu entry prints for a file that is not its own.
+        if done == LaunchAgent::LeftAlone {
+            eprintln!(
+                "seatswap: {} was not made by seatswap; it is left as it is.",
+                agent_file.display()
+            );
+        }
+        Ok(())
     }
     #[cfg(windows)]
     apply(enabled, &exe, registry::RUN_KEY, arguments).map_err(|error| error.to_string())
@@ -496,7 +681,7 @@ mod tests {
         }
     }
 
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     mod xdg {
         use super::super::*;
 
@@ -652,6 +837,246 @@ mod tests {
             apply(true, Path::new("/two/seatswap"), tmp.path(), &[]).expect("second");
             let text = fs::read_to_string(path).expect("read");
             assert!(text.contains("Exec=\"/two/seatswap\""), "{text:?}");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    mod launch_agent {
+        use super::super::*;
+
+        use seatswap_core::paths::launch_agent_file;
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        use std::time::{Duration, SystemTime};
+
+        const EXE: &str = "/Applications/seatswap.app/Contents/MacOS/seatswap";
+
+        fn startup_flags() -> Vec<String> {
+            vec![
+                "--data-dir".to_string(),
+                "/Users/u/Library/Application Support/seatswap".to_string(),
+                "--claude-config-dir".to_string(),
+                "/Users/u/.claude".to_string(),
+            ]
+        }
+
+        fn hand_made_agent() -> &'static str {
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\">\n<dict>\n\t<key>Label</key>\n\t<string>dev.seatswap.app</string>\n\t<key>Program</key>\n\t<string>/usr/local/bin/seatswap</string>\n</dict>\n</plist>\n"
+        }
+
+        #[test]
+        fn the_label_is_the_tauri_identifier() {
+            let config: serde_json::Value =
+                serde_json::from_str(include_str!("../../tauri.conf.json"))
+                    .expect("tauri.conf.json is JSON");
+            assert_eq!(config["identifier"], LAUNCH_AGENT_LABEL);
+        }
+
+        #[test]
+        fn the_plist_runs_the_program_with_the_startup_flags_at_load() {
+            let text = launch_agent_plist(Path::new(EXE), &startup_flags()).expect("plist");
+            assert_eq!(
+                text,
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+                 <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+                 <!-- X-seatswap-managed=true -->\n\
+                 <plist version=\"1.0\">\n\
+                 <dict>\n\
+                 \t<key>Label</key>\n\
+                 \t<string>dev.seatswap.app</string>\n\
+                 \t<key>ProgramArguments</key>\n\
+                 \t<array>\n\
+                 \t\t<string>/Applications/seatswap.app/Contents/MacOS/seatswap</string>\n\
+                 \t\t<string>--data-dir</string>\n\
+                 \t\t<string>/Users/u/Library/Application Support/seatswap</string>\n\
+                 \t\t<string>--claude-config-dir</string>\n\
+                 \t\t<string>/Users/u/.claude</string>\n\
+                 \t</array>\n\
+                 \t<key>RunAtLoad</key>\n\
+                 \t<true/>\n\
+                 </dict>\n\
+                 </plist>\n"
+            );
+            assert!(!text.contains("KeepAlive"), "quitting must not restart it");
+        }
+
+        #[test]
+        fn the_plist_escapes_the_five_xml_characters() {
+            let exe = Path::new("/Users/u/Tom & Jerry's <apps>/\"seatswap\"");
+            let arguments = vec!["--data-dir".to_string(), "/Users/u/a&b".to_string()];
+            let text = launch_agent_plist(exe, &arguments).expect("plist");
+            assert!(
+                text.contains(
+                    "\t\t<string>/Users/u/Tom &amp; Jerry&apos;s &lt;apps&gt;/&quot;seatswap&quot;</string>\n"
+                ),
+                "{text}"
+            );
+            assert!(
+                text.contains("\t\t<string>/Users/u/a&amp;b</string>\n"),
+                "{text}"
+            );
+            // A tab and a line feed are kept as they are.
+            assert_eq!(xml_text("a\tb\nc").expect("tab and LF"), "a\tb\nc");
+        }
+
+        #[test]
+        fn a_character_xml_cannot_hold_is_refused_and_nothing_is_written() {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let agent = launch_agent_file(tmp.path());
+            for (argument, character) in [
+                ("/Users/u/my\rdata", '\r'),
+                ("/Users/u/my\u{1}data", '\u{1}'),
+                ("/Users/u/my\u{fffe}data", '\u{fffe}'),
+            ] {
+                let arguments = vec!["--data-dir".to_string(), argument.to_string()];
+                match apply(true, Path::new(EXE), &agent, &arguments) {
+                    Err(AutostartError::NotInPlist {
+                        character: refused,
+                        value,
+                    }) => {
+                        assert_eq!(refused, character);
+                        assert_eq!(value, argument);
+                    }
+                    other => panic!("expected NotInPlist, got {other:?}"),
+                }
+            }
+            assert!(
+                !tmp.path().join("Library").exists(),
+                "nothing may be created for an agent that cannot be written"
+            );
+        }
+
+        #[test]
+        fn a_program_path_that_is_not_unicode_is_refused_and_nothing_is_written() {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let exe = super::not_unicode_path();
+            match apply(true, &exe, &launch_agent_file(tmp.path()), &[]) {
+                Err(AutostartError::NotUnicode { path }) => assert_eq!(path, exe),
+                other => panic!("expected NotUnicode, got {other:?}"),
+            }
+            assert!(!tmp.path().join("Library").exists());
+        }
+
+        #[test]
+        fn on_writes_the_agent_and_off_removes_it() {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let agent = launch_agent_file(tmp.path());
+            assert!(!agent.exists());
+
+            assert_eq!(
+                apply(true, Path::new(EXE), &agent, &startup_flags()).expect("on"),
+                LaunchAgent::Written
+            );
+            assert_eq!(
+                fs::read_to_string(&agent).expect("read the agent"),
+                launch_agent_plist(Path::new(EXE), &startup_flags()).expect("plist")
+            );
+            let mode = fs::metadata(&agent).expect("metadata").permissions().mode() & 0o777;
+            assert_eq!(mode, 0o644, "launchd refuses an agent others can write");
+
+            assert_eq!(
+                apply(false, Path::new(EXE), &agent, &[]).expect("off"),
+                LaunchAgent::Removed
+            );
+            assert!(!agent.exists());
+            assert_eq!(
+                apply(false, Path::new(EXE), &agent, &[]).expect("off again"),
+                LaunchAgent::Absent
+            );
+        }
+
+        #[test]
+        fn an_equal_agent_is_not_touched_and_a_different_one_is_rewritten() {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let agent = launch_agent_file(tmp.path());
+            apply(true, Path::new(EXE), &agent, &[]).expect("on");
+
+            let old = SystemTime::UNIX_EPOCH + Duration::from_secs(1_600_000_000);
+            fs::File::options()
+                .write(true)
+                .open(&agent)
+                .expect("open the agent")
+                .set_times(fs::FileTimes::new().set_modified(old))
+                .expect("set the mtime");
+            assert_eq!(
+                apply(true, Path::new(EXE), &agent, &[]).expect("on again"),
+                LaunchAgent::Unchanged
+            );
+            assert_eq!(
+                fs::metadata(&agent)
+                    .expect("metadata")
+                    .modified()
+                    .expect("mtime"),
+                old,
+                "an equal agent is not touched"
+            );
+
+            assert_eq!(
+                apply(true, Path::new(EXE), &agent, &startup_flags()).expect("new flags"),
+                LaunchAgent::Written
+            );
+            assert_eq!(
+                fs::read_to_string(&agent).expect("read the agent"),
+                launch_agent_plist(Path::new(EXE), &startup_flags()).expect("plist")
+            );
+        }
+
+        #[test]
+        fn a_hand_made_agent_is_left_alone_on_and_off() {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let agent = launch_agent_file(tmp.path());
+            fs::create_dir_all(agent.parent().expect("the LaunchAgents folder"))
+                .expect("create the folder");
+            fs::write(&agent, hand_made_agent()).expect("a hand-made agent");
+
+            for enabled in [true, false] {
+                assert_eq!(
+                    apply(enabled, Path::new(EXE), &agent, &[]).expect("apply"),
+                    LaunchAgent::LeftAlone
+                );
+                assert_eq!(
+                    fs::read_to_string(&agent).expect("read the agent"),
+                    hand_made_agent(),
+                    "an agent without the managed line is never overwritten or removed"
+                );
+            }
+        }
+
+        #[test]
+        fn a_symlinked_agent_is_left_alone_on_and_off() {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let agent = launch_agent_file(tmp.path());
+            fs::create_dir_all(agent.parent().expect("the LaunchAgents folder"))
+                .expect("create the folder");
+            // The link points at a file that even carries seatswap's own text.
+            let target = tmp.path().join("dotfiles.plist");
+            let ours = launch_agent_plist(Path::new(EXE), &[]).expect("plist");
+            fs::write(&target, &ours).expect("the link's target");
+            symlink(&target, &agent).expect("a symlinked agent");
+
+            for enabled in [true, false] {
+                assert_eq!(
+                    apply(enabled, Path::new("/other/seatswap"), &agent, &[]).expect("apply"),
+                    LaunchAgent::LeftAlone
+                );
+                assert!(
+                    fs::symlink_metadata(&agent)
+                        .expect("the link")
+                        .file_type()
+                        .is_symlink(),
+                    "the link stays a link"
+                );
+                assert_eq!(fs::read_to_string(&target).expect("the target"), ours);
+            }
+
+            fs::remove_file(&agent).expect("remove the link");
+            symlink(tmp.path().join("missing.plist"), &agent).expect("a dangling link");
+            for enabled in [true, false] {
+                assert_eq!(
+                    apply(enabled, Path::new(EXE), &agent, &[]).expect("apply"),
+                    LaunchAgent::LeftAlone
+                );
+                assert!(fs::symlink_metadata(&agent).is_ok(), "the link stays");
+            }
         }
     }
 

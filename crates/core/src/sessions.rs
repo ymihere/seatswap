@@ -318,10 +318,97 @@ impl Liveness for SystemProbe {
     }
 }
 
-#[cfg(not(any(target_os = "linux", windows)))]
+/// macOS: Claude Code writes `procStart` as `LC_ALL=C TZ=UTC ps -o lstart= -p
+/// <pid>` prints it, trimmed (e.g. `Sat Nov 21 17:48:08 2026`; checked in
+/// Claude Code 2.1.330). The probe lists every process once the same way and
+/// compares.
+#[cfg(target_os = "macos")]
+pub struct SystemProbe {
+    processes: std::collections::HashMap<u32, PsProcess>,
+}
+
+#[cfg(target_os = "macos")]
+impl SystemProbe {
+    /// Runs `/bin/ps` once for every process: its pid, state and start time,
+    /// in the C locale and UTC as Claude Code reads them. Nothing else is
+    /// read; no process is touched.
+    pub fn new() -> io::Result<SystemProbe> {
+        let output = std::process::Command::new("/bin/ps")
+            .args(["-A", "-o", "pid=,stat=,lstart="])
+            .env("LC_ALL", "C")
+            .env("TZ", "UTC")
+            .stdin(std::process::Stdio::null())
+            .output()?;
+        if !output.status.success() {
+            return Err(io::Error::other(format!(
+                "/bin/ps failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        Ok(SystemProbe {
+            processes: ps_processes(&String::from_utf8_lossy(&output.stdout)),
+        })
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Liveness for SystemProbe {
+    fn alive(&self, file: &SessionFile) -> bool {
+        self.processes
+            .get(&file.pid)
+            .is_some_and(|process| ps_is_alive(process, &file.proc_start))
+    }
+}
+
+/// One line of `ps -o pid=,stat=,lstart=`.
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug, PartialEq, Eq)]
+struct PsProcess {
+    state: String,
+    /// The start time with its spaces made single (`ps` pads a one-digit day).
+    start: String,
+}
+
+/// The processes of `ps -o pid=,stat=,lstart=` output, by pid. A line that
+/// does not have a pid, a state and a start time is left out.
+#[cfg(any(target_os = "macos", test))]
+fn ps_processes(text: &str) -> std::collections::HashMap<u32, PsProcess> {
+    let mut processes = std::collections::HashMap::new();
+    for line in text.lines() {
+        let mut fields = line.split_whitespace();
+        let (Some(pid), Some(state)) = (fields.next(), fields.next()) else {
+            continue;
+        };
+        let Ok(pid) = pid.parse::<u32>() else {
+            continue;
+        };
+        let start = fields.collect::<Vec<_>>().join(" ");
+        if start.is_empty() {
+            continue;
+        }
+        processes.insert(
+            pid,
+            PsProcess {
+                state: state.to_string(),
+                start,
+            },
+        );
+    }
+    processes
+}
+
+/// Running when the start times match (spaces made single on both sides) and
+/// the state is not `Z`: a killed process its parent has not reaped yet.
+#[cfg(any(target_os = "macos", test))]
+fn ps_is_alive(process: &PsProcess, proc_start: &str) -> bool {
+    let proc_start = proc_start.split_whitespace().collect::<Vec<_>>().join(" ");
+    !process.state.starts_with('Z') && !proc_start.is_empty() && process.start == proc_start
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub struct SystemProbe;
 
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 impl SystemProbe {
     pub fn new() -> io::Result<SystemProbe> {
         Err(io::Error::new(
@@ -331,7 +418,7 @@ impl SystemProbe {
     }
 }
 
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 impl Liveness for SystemProbe {
     fn alive(&self, _file: &SessionFile) -> bool {
         false
@@ -537,6 +624,54 @@ mod tests {
     fn pipe_name_takes_what_follows_the_pipe_folder() {
         assert_eq!(pipe_name("/run/user/1000/cc-socks/41822.sock"), None);
         assert_eq!(pipe_name(r"\\.\pipe\"), None);
+    }
+
+    #[test]
+    fn ps_lines_are_read_by_pid() {
+        let text = concat!(
+            "    1 Ss   Sat Nov  7 16:58:59 2026\n",
+            " 1892 S+   Sat Nov 21 17:48:08 2026\n",
+            "41822 Z    Fri Nov 20 08:03:19 2026\n",
+            "garbage\n",
+            "  77 R\n",
+        );
+        let processes = ps_processes(text);
+        assert_eq!(processes.len(), 3, "{processes:?}");
+        assert_eq!(
+            processes[&1],
+            PsProcess {
+                state: "Ss".to_string(),
+                start: "Sat Nov 7 16:58:59 2026".to_string(),
+            }
+        );
+        assert!(ps_is_alive(&processes[&1892], "Sat Nov 21 17:48:08 2026"));
+        // Claude Code trims, so a one-digit day keeps its two spaces.
+        assert!(ps_is_alive(&processes[&1], "Sat Nov  7 16:58:59 2026"));
+        assert!(!ps_is_alive(&processes[&1892], "Sat Nov 21 17:48:09 2026"));
+        assert!(!ps_is_alive(&processes[&1892], ""));
+        assert!(
+            !ps_is_alive(&processes[&41822], "Fri Nov 20 08:03:19 2026"),
+            "a zombie is not running"
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn the_probe_knows_its_own_process() {
+        let output = std::process::Command::new("/bin/ps")
+            .args(["-o", "lstart=", "-p", &std::process::id().to_string()])
+            .env("LC_ALL", "C")
+            .env("TZ", "UTC")
+            .output()
+            .unwrap();
+        let own_start = String::from_utf8(output.stdout).unwrap().trim().to_string();
+        let probe = SystemProbe::new().unwrap();
+        assert!(probe.alive(&session_file(std::process::id(), &own_start)));
+        assert!(!probe.alive(&session_file(
+            std::process::id(),
+            "Thu Jan  1 00:00:00 1970"
+        )));
+        assert!(!probe.alive(&session_file(u32::MAX, &own_start)));
     }
 
     #[test]

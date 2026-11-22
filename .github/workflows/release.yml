@@ -1,6 +1,6 @@
 name: Release
 
-# Pushing a tag vX.Y.Z runs the CI checks, builds the Linux and Windows packages
+# Pushing a tag vX.Y.Z runs the CI checks, builds the Linux, macOS and Windows packages
 # and puts them into a draft release whose notes are the CHANGELOG section of
 # X.Y.Z. Publish the draft by hand after reading it (CONTRIBUTING.md, "Making a
 # release").
@@ -28,6 +28,9 @@ jobs:
             platform: x86_64-linux
           - os: windows-latest
             platform: x86_64-windows
+          # Apple silicon. The binary is not signed or notarized (README, macOS).
+          - os: macos-15
+            platform: aarch64-macos
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
@@ -54,7 +57,11 @@ jobs:
           else
             cp target/release/seatswap "$PACKAGE/"
             tar czf "$PACKAGE.tar.gz" "$PACKAGE"
-            sha256sum "$PACKAGE.tar.gz" > "$PACKAGE.tar.gz.sha256"
+            if [ "$RUNNER_OS" = macOS ]; then
+              shasum -a 256 "$PACKAGE.tar.gz" > "$PACKAGE.tar.gz.sha256"
+            else
+              sha256sum "$PACKAGE.tar.gz" > "$PACKAGE.tar.gz.sha256"
+            fi
           fi
       - uses: actions/upload-artifact@v6
         with:

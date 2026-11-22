@@ -1,5 +1,5 @@
 name: Set up the build
-description: Tauri's system libraries on Linux, the stable Rust toolchain and the cargo cache. Used by CI and by the release build.
+description: Tauri's system libraries on Linux (macOS and Windows need none), the stable Rust toolchain and the cargo cache. Used by CI and by the release build.
 runs:
   using: composite
   steps:

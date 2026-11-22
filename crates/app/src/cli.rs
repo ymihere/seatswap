@@ -990,6 +990,14 @@ pub(crate) fn resolve_paths(
     } else {
         ClaudePaths::resolve(None)?
     };
+    // This crate's own tests reach here with temporary folders. On macOS
+    // `resolve` names the folder's Keychain item, which lives in the user's
+    // real default keychain, so the tests always keep the login in the file.
+    #[cfg(test)]
+    let claude = ClaudePaths {
+        login_keychain: None,
+        ..claude
+    };
     Ok(Paths { app, claude })
 }
 
@@ -3053,7 +3061,7 @@ pub(crate) mod tests {
             "codex list saved or changed a login"
         );
         assert!(
-            !fixture
+            fixture
                 .store()
                 .secrets()
                 .get_codex(&providers::codex::secret_id(&AccountRef {
@@ -3061,7 +3069,7 @@ pub(crate) mod tests {
                     org: CODEX_ORG.to_string(),
                 }))
                 .expect("the secret store")
-                .is_some(),
+                .is_none(),
             "codex list saved the live login"
         );
     }

@@ -358,6 +358,13 @@ fn setup(
     claude_override: Option<PathBuf>,
     data_override: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // macOS: a menu-bar app, without a Dock icon or a place in the app
+    // switcher, like the tray app on Linux and Windows.
+    #[cfg(target_os = "macos")]
+    tauri_app
+        .handle()
+        .set_activation_policy(tauri::ActivationPolicy::Accessory)?;
+
     // Read the settings without opening the secret store: the main thread never
     // probes the keyring. A file that cannot be read is reported in the snapshot
     // and the tray keeps running.
@@ -478,8 +485,9 @@ fn setup(
     }
 
     // The Linux menu entry and its icon are written at every start, whatever
-    // `startAtLogin` says. A path that is not seatswap's own is left alone with
-    // one line; a failure is reported and never stops the start.
+    // `startAtLogin` says (Windows and macOS have none; the outcome is empty).
+    // A path that is not seatswap's own is left alone with one line; a failure
+    // is reported and never stops the start.
     match desktop_entry::apply_at_start(&autostart_args) {
         Ok(outcome) => {
             for path in &outcome.left_alone {
@@ -1048,8 +1056,10 @@ mod tests {
     #[test]
     fn the_bundle_icon_is_the_default_window_icon() {
         // Every window is built without its own icon, so Tauri's default window
-        // icon (the bundle's icons/icon.png) must be there.
-        let context: tauri::Context<tauri::Wry> = tauri::generate_context!();
+        // icon (the bundle's icons/icon.png) must be there. `test = true`: on
+        // macOS every other context would embed a second Info.plist symbol
+        // beside the app's own.
+        let context: tauri::Context<tauri::Wry> = tauri::generate_context!(test = true);
         let icon = context
             .default_window_icon()
             .expect("the bundle icon is the default window icon");
@@ -1103,7 +1113,7 @@ mod tests {
     #[test]
     #[cfg(not(windows))]
     fn the_default_window_icon_is_the_app_icon() {
-        let context: tauri::Context<tauri::Wry> = tauri::generate_context!();
+        let context: tauri::Context<tauri::Wry> = tauri::generate_context!(test = true);
         let icon = context
             .default_window_icon()
             .expect("the bundle icon is the default window icon");

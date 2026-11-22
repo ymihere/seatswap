@@ -4193,7 +4193,6 @@ mod tests {
         ends.start_pass();
         assert_eq!(ends.len(), 1, "only the answer asked for in the last pass");
         assert!(ask(&mut ends, &kept));
-        drop(ask);
         assert_eq!(reads, 2, "the kept transcript was read once");
     }
 

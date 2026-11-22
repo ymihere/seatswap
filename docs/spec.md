@@ -80,7 +80,13 @@ On macOS Claude Code keeps the same JSON in the login Keychain, not in a file:
 - With the default config folder the service name is `Claude Code-credentials`. *(code)*
 - With `CLAUDE_CONFIG_DIR` set it is `Claude Code-credentials-<h>`, where `<h>` is the first 8 hex characters of the SHA-256 of the folder path. *(code)*
 - The Keychain account name is the user name (`$USER`). *(code)*
-- Not tried on a Mac yet *(Phase 0)*.
+- Checked on macOS 26 with Claude Code 2.1.330 (2026-11-21): the item `Claude Code-credentials`,
+  account `$USER`, in the login Keychain, holding the same JSON as `.credentials.json`; no
+  `.credentials.json` on that Mac. Claude Code reads and writes it with `/usr/bin/security`, so
+  seatswap uses that program too and updates the item in place (`add-generic-password -U`).
+  *(tested)*
+- Claude Code writes `procStart` of a session file on macOS as `LC_ALL=C TZ=UTC ps -o lstart= -p
+  <pid>` prints it, trimmed; seatswap's session probe compares with the same form. *(code)*
 
 ### 2.3 Account identity: `~/.claude.json` → `oauthAccount`
 
@@ -2624,7 +2630,7 @@ Run on 2026-11-10 with two real accounts in a separate config folder. Evidence a
 | 3 | Claude Code's locks | **Done.** Three locks; Claude Code waits for each (§2.6, §6.2). |
 | 4 | Organization caches | **Done** for Team ↔ personal: Claude Code handles them (§2.4). Open: two Team or Enterprise organizations. |
 | 5 | Usage endpoint | **Partly.** Works with a refreshed login; a limit can be missing (§3). Open: which scope it needs, its rate limit, the values `severity` takes near and at 100 %. |
-| 6 | macOS | Open: the Keychain names from §2.2, and whether updating the item in place keeps Claude Code's access to it without a new password prompt. |
+| 6 | macOS | **Partly.** The Keychain names from §2.2 are confirmed, and a switch by seatswap's command line updates the item in place without a prompt (2026-11-21, a throw-away config folder). Open: a running Claude Code session following a switch on a Mac (it keeps its copy for up to 30 s). |
 | 7 | Windows | **Done** (checked 2026-11-11, Claude Code 2.1.322 on Windows 11): `%USERPROFILE%\.claude\.credentials.json` and `%USERPROFILE%\.claude.json`, the same keys and format as on Linux; nothing in Windows Credential Manager; the same lock folders. Port: `docs/windows.md`. |
 | 8 | Tauri tray on Cinnamon | **Done** with the `ksni` backend: the icon updates live, left click opens the pop-up at the mouse, right click shows the menu, the tooltip shows. The label next to the icon does not show (§8.1). Open: whether an open menu refreshes its text. |
 | 9 | Sessions inside VS Code | Expected to follow a switch like a terminal session (experience from daily use, §6.5). Test postponed until no work sessions are running. |

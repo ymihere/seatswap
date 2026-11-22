@@ -79,7 +79,7 @@ Screenshots for the docs come from that demo data only; every name in it is made
    heading, add its link at the bottom, and set `version = "X.Y.Z"` in the root `Cargo.toml`
    (then `cargo build` updates `Cargo.lock`). Commit and push.
 2. `git tag vX.Y.Z && git push origin vX.Y.Z`. The release workflow runs the CI checks, builds the
-   Linux and Windows packages and creates a draft release with the CHANGELOG section as notes.
+   Linux, macOS and Windows packages and creates a draft release with the CHANGELOG section as notes.
 3. Read the draft on GitHub, add install notes if needed, and publish it.
 
 ## Design documents
