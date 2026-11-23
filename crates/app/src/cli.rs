@@ -4373,18 +4373,20 @@ pub(crate) mod tests {
         }
     }
 
-    /// PR and AC as the planner needs them: PR fills after 50 h, AC's weekly
-    /// reset comes after 24 h, so the lazy plan blocks more work than the eager
-    /// one (the eager plan uses AC at once, until its reset).
+    /// PR, AC and LB as the planner needs them: PR at 50 % needs 25 USD; AC
+    /// and LB each need 25 of the 48 USD before their common weekly reset
+    /// after 48 h. The eager plan starts on them at once; the lazy plan waits
+    /// until AC is down to the cushion and cannot empty both, so it blocks 60
+    /// USD of work to the eager plan's 45.
     fn burn_plan_inputs() -> Inputs {
         let now = DateTime::parse_from_rfc3339("2026-11-10T12:00:00Z")
             .expect("a test time")
             .with_timezone(&Utc);
-        let state = |id: &str, c: f64, reset: &str| AccountState {
+        let state = |id: &str, c: f64, week: f64, reset: &str| AccountState {
             id: id.to_string(),
             may_use: true,
             login_ok: true,
-            week_percent: 0.0,
+            week_percent: week,
             week_resets_at: DateTime::parse_from_rfc3339(reset)
                 .expect("a test time")
                 .with_timezone(&Utc),
@@ -4397,8 +4399,9 @@ pub(crate) mod tests {
             now,
             offset: FixedOffset::east_opt(0).expect("UTC"),
             accounts: vec![
-                state("pr", 2.0, "2026-11-18T12:00:00Z"),
-                state("ac", 5.0, "2026-11-11T12:00:00Z"),
+                state("pr", 2.0, 50.0, "2026-11-18T12:00:00Z"),
+                state("ac", 4.0, 0.0, "2026-11-12T12:00:00Z"),
+                state("lb", 4.0, 0.0, "2026-11-12T12:00:00Z"),
             ],
             active: Some("pr".to_string()),
             rhythm: Rhythm { usd: [1.0; 168] },

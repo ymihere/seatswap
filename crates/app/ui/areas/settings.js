@@ -3192,7 +3192,7 @@ function measuredText(measured) {
 
 function switchesNote(view) {
   if (!view) return "";
-  if (!view.early) return "early switching is off";
+  if (!view.early) return "no other early switches";
   const value = view.measured ? view.measured.switchesPerDay : null;
   if (!Number.isFinite(value)) return MISSING;
   return `about ${shortPercent(value)} switches a day`;

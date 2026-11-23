@@ -1309,7 +1309,9 @@ mod tests {
         let ac = account("ac", "AC", AC_ACC, true);
         let mut learned = learned("atlas", Vec::new());
         // Every hour has work, so PR at 99.5 % fills in the plan's first step
-        // and the lazy plan moves to AC.
+        // and the lazy plan moves to AC. AC at 99 % has no 5 h window here and
+        // needs 0.25 USD of the work before its reset, so its slack is far above
+        // the cushion and the lazy plan does not move to it before PR is full.
         learned.rhythm = Rhythm { usd: [1.0; 168] };
         learned.rates = BTreeMap::from([
             (AccountRef::of(&pr), Rates::given(2.0, None)),
@@ -1317,10 +1319,11 @@ mod tests {
         ]);
         let views = vec![
             view("pr", "PR", 99.5, None, now - Duration::minutes(1)),
-            view("ac", "AC", 10.0, Some(10.0), now - Duration::minutes(1)),
+            view("ac", "AC", 99.0, None, now - Duration::minutes(1)),
         ];
         let situation = ready(&learned, &views, &[pr, ac], Some("pr"), now);
         let plan = follow(&situation.inputs, Policy::Lazy);
+        assert_eq!(plan.segments[0].account.as_deref(), Some("pr"));
         assert_eq!(plan.segments[1].account.as_deref(), Some("ac"));
 
         let switch = Decision::Switch {
@@ -1452,7 +1455,7 @@ mod tests {
             accounts: &accounts,
             ..tiny.ctx()
         };
-        let inputs = crate::burn::plan::testkit::inputs();
+        let inputs = crate::burn::plan::testkit::calm();
         let early = early_regime(true);
         let active = inputs.active.as_deref();
         let lazy = follow(&inputs, Policy::Lazy);

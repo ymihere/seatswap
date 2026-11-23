@@ -659,7 +659,7 @@ pub struct AccountView {
 }
 
 // Step B's suggestion is `burn_text::SwitchSuggestion { to, text }`, built from the decision and the
-// lazy plan it computes itself (`follow(inputs, Policy::Lazy)`). It replaces the fixed `Suggestion`
+// plan it computes itself (`follow(inputs, Policy::WhenFull)`). It replaces the fixed `Suggestion`
 // struct and `engine::suggestion`, which are gone.
 
 /// §6.3: accounts whose login ends within 5 days (days_left 5..=2 → Soon, ≤ 1 → Tomorrow, < 0 → Ended).
@@ -1779,7 +1779,9 @@ are Anthropic's only. `Account::capacity()` reads
     pub last_switch_at: Option<DateTime<Utc>>, pub manual_hold_until: Option<DateTime<Utc>> }
 impl Inputs { pub fn check(&self) -> Result<(), PlanError>; }   // also LastSwitchAfterNow
 pub(super) fn early_move_allowed(last_switch: Option<DateTime<Utc>>,
-    manual_hold_until: Option<DateTime<Utc>>, at: DateTime<Utc>) -> bool; // decide and the eager plan
+    manual_hold_until: Option<DateTime<Utc>>, at: DateTime<Utc>) -> bool; // decide and both plans
+pub(super) fn early_move_due(early: bool, target_slack: f64, current_slack: f64,
+    typical: f64) -> bool; // decide and both plans
 pub enum PlanError { InvalidPercent{account,limit,percent}, SessionWithoutReset{account,percent},
     UnknownActive{id}, DuplicateAccount{id}, LastSwitchAfterNow{at,now}, OldestReadingAfterNow{at,now} }
 pub fn blocked(account: &AccountState, at: DateTime<Utc>) -> bool;
@@ -1788,7 +1790,7 @@ pub fn usable_again(account: &AccountState, at: DateTime<Utc>) -> Option<DateTim
 pub fn rates_known(account: &AccountState) -> bool;               // c known; s may be missing
 pub fn slack(account: &AccountState, inputs: &Inputs) -> Option<f64>;
 pub fn choose(inputs: &Inputs, at: DateTime<Utc>) -> Option<String>;
-#[derive(Debug, Clone, Copy, PartialEq, Eq)] pub enum Policy { Lazy, Eager }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)] pub enum Policy { WhenFull, Lazy, Eager }
 #[derive(Debug, Clone, PartialEq, Eq)] pub struct Segment { pub account: Option<String>,
     pub from: DateTime<Utc>, pub to: DateTime<Utc> }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)] pub enum Fill { Window, Week }
@@ -1800,13 +1802,16 @@ pub fn followed(inputs: &Inputs, regime: &Regime) -> Plan; // eager while `regim
 pub(super) fn rhythm_walk(inputs: &Inputs) -> Walk<'_>; // the plan and `decide::latest_reaching`
 ```
 
-`follow` plays 168 h in 15-minute steps. Lazy stays on the current account until it is not usable,
-then calls `choose`; eager also moves when `choose` names another usable account whose slack is at
-least `SLACK_MARGIN_H` × the typical hour below the current one's and `early_move_allowed` says
-yes: the last switch at least `MIN_DWELL_MIN` ago and no manual hold running. The walk starts from
+`follow` plays 168 h in 15-minute steps. Every policy leaves the current account when it is not
+usable, then calls `choose`. WhenFull ("only when full", for the Forecast and the suggestion's
+"Staying on …" sentence) makes no other move. Lazy and eager also move when `choose` names another
+usable account whose slack is at least `SLACK_MARGIN_H` × the typical hour below the current one's,
+`early_move_allowed` says yes (the last switch at least `MIN_DWELL_MIN` ago and no manual hold
+running) and `early_move_due` says yes: eager always, lazy only when the target's slack is at most
+`EXPIRY_CUSHION_H` (8) × the typical hour, so it is at risk of losing quota at its reset. The walk starts from
 `Inputs::last_switch_at` and `Inputs::manual_hold_until`, so the plan's first early move is the one
 `decide` will make; a replay passes `None` for both. An account without rates is played with `c = 0` and `s = 0`: it never fills
-and never causes an eager move. An active account with `may_use` false stays until it is blocked.
+and never causes an early move. An active account with `may_use` false stays until it is blocked.
 `choose` is the usable account with the least slack, ties by the earlier weekly reset and then id;
 when any usable account has no rates it uses the fixed order instead (capped accounts with an open
 window first, then the rest, each by earlier reset and id). When every usable account has a slack,
@@ -1840,8 +1845,9 @@ pub fn decide(situation: &Situation, regime: &Regime) -> Decision;
 `decide` in this order: a reading older than `FRESH_MIN` → `Stale`; the active account blocked or no
 active account → `choose` names a target → `Switch` (`NoneActive` when there was none, otherwise
 `ActiveFull`), else `AllFull`; `early_move_allowed` false (a manual hold in the future, or the last
-switch less than `MIN_DWELL_MIN` ago) → `Stay`; early switching on, an active account auto-burn may
-use, and `choose` names another account with enough less slack → `Switch` (`WindowOpen` when the target has a 5 h limit, else `ResetNear`), or `Wait` when
+switch less than `MIN_DWELL_MIN` ago) → `Stay`; an active account auto-burn may use, `choose` names
+another account with enough less slack, and early switching is on or that account's slack is at
+most `EXPIRY_CUSHION_H` × the typical hour (`early_move_due`) → `Switch` (`WindowOpen` when the target has a 5 h limit, else `ResetNear`), or `Wait` when
 a thinking-tied session is busy and the target still has slack; otherwise `Stay`. A target slack of
 0 or less switches at once. `regime.early` is `why == Pays`; it needs rates for every account
 auto-burn may use, a typical hour, at least `MIN_COST_SAMPLES`, and both gain rules of
@@ -2060,7 +2066,7 @@ pub fn no_accounts_line(accounts: &[Account]) -> Vec<BurnPart>;
 pub fn why(why: RegimeWhy) -> &'static str;
 pub fn segment_line(account: Option<&str>, views: &[AccountView], from: DateTime<Utc>,
                     to: DateTime<Utc>, now: DateTime<Utc>, offset: FixedOffset) -> Result<String, TextError>;
-pub fn policy_name(policy: Policy) -> &'static str; // "Lazy" | "Eager"
+pub fn policy_name(policy: Policy) -> &'static str; // "Only when full" | "Lazy" | "Eager"
 pub fn replay_report(result: &ReplayResult, accounts: &[Account]) -> Result<String, TextError>;
 pub fn reason(reason: &Reason, target: &str, active: Option<&str>, views: &[AccountView],
               now: DateTime<Utc>, offset: FixedOffset) -> Result<String, TextError>;
@@ -2079,8 +2085,8 @@ Every text is here; the tray app and the CLI do not keep a second copy. Missing 
 `Save an account to start.` without a stored account, else `No account auto-burn may use has a working login.` `why(SessionsOff)` is
 `reading sessions is off: no rates are learned`. `suggestion` returns `Some` only for `Switch`
 and `Wait`, and chooses the plan for its "Staying on … is expected to let … expire" sentence
-itself: `follow(inputs, Policy::Lazy)`, the plan that switches only at 100 %, never the plan
-auto-burn follows (which is eager while early switching is on). It adds that sentence only when
+itself: `follow(inputs, Policy::WhenFull)`, the plan that switches only at 100 %, never the plan
+auto-burn follows (which moves early to an account at risk of losing quota). It adds that sentence only when
 that plan leaves more than 1 % of the target's week at its reset.
 
 ## app: auto-burn in the tray app (`gui/burn_rt.rs`, step B)
@@ -2174,7 +2180,7 @@ backend, takes no lock and writes no history. The other additions:
 ### `burn plan --json`
 
 ```json
-{"regime":{"early":true,"why":"switching before 100 % pays","blockedLazyH":2.0,
+{"regime":{"early":true,"why":"switches early whenever it pays","blockedLazyH":2.0,
   "blockedEagerH":0.0,"extraSwitches":4,"costH":0.1},
  "segments":[{"account":"…","from":"2026-11-15T07:00:00Z","to":"2026-11-15T09:00:00Z"},
              {"account":null,"from":"…","to":"…"}],
@@ -3911,7 +3917,7 @@ Page details that are easy to miss:
 - `subscriptions`' `since` is the first period of the whole history, not of the range; `plan` and
   `price` are the latest visible period's.
 - `forecast` uses `regime.early` to choose the planned policy (`Eager`/`Lazy`), always computes the
-  lazy plan, takes `HORIZON_H = 168` hours from `inputs.now`, reads the last eight finished windows
+  `WhenFull` plan for "only when full", takes `HORIZON_H = 168` hours from `inputs.now`, reads the last eight finished windows
   and the samples that name their resets, and returns an error if a plan account is not stored.
   `low` is `state.week_percent + gains[1]` capped at 100, with fewer than four gains → `None`.
 - `rhythm` divides the heat map and both per-day numbers by the range's calendar weeks (a partial

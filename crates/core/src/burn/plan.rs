@@ -1,7 +1,8 @@
-//! Slack, choice and the two forward plans of auto-burn (spec §2.2–2.5): how
-//! much work each account can still take before its reset, which account to
-//! use, and what the next 168 hours look like when it is switched only when
-//! blocked (lazy) or as early as it pays (eager).
+//! Slack, choice and the forward plans of auto-burn (spec §2.2–2.5): how much
+//! work each account can still take before its reset, which account to use,
+//! and what the next 168 hours look like when it is switched only when blocked
+//! (when full), also when another account is at risk of losing quota (lazy),
+//! or as early as it pays (eager).
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -12,7 +13,7 @@ use crate::api::{Limit, LimitKind, Severity};
 use crate::transcripts::hour_start;
 
 use super::decide::Regime;
-use super::{Rates, Rhythm, HORIZON_H, MIN_DWELL_MIN, SLACK_MARGIN_H, STEP_MIN};
+use super::{Rates, Rhythm, EXPIRY_CUSHION_H, HORIZON_H, MIN_DWELL_MIN, SLACK_MARGIN_H, STEP_MIN};
 
 /// A 5 h window lasts this many hours (spec §2.1).
 const WINDOW_H: i64 = 5;
@@ -157,12 +158,19 @@ fn valid_percent(percent: f64) -> bool {
     percent.is_finite() && percent >= 0.0
 }
 
-/// The two plans of spec §2.5.
+/// The plans of spec §2.5. Auto-burn follows `Lazy` or `Eager`; `WhenFull` is
+/// what the Forecast and the suggestion compare them with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Policy {
-    /// Stay on the current account until it is not usable.
+    /// Stay on the current account until it is not usable: "only when full".
+    WhenFull,
+    /// Stay on the current account until it is not usable, or until another
+    /// account with clearly less slack has a slack of at most
+    /// [`EXPIRY_CUSHION_H`] typical hours: it is at risk of losing quota at its
+    /// weekly reset.
     Lazy,
-    /// Also move to an account with clearly less slack.
+    /// Also move to an account with clearly less slack while its slack is
+    /// above that cushion.
     Eager,
 }
 
@@ -372,27 +380,29 @@ pub fn choose(inputs: &Inputs, at: DateTime<Utc>) -> Option<String> {
 }
 
 /// Play the next [`HORIZON_H`] hours in [`STEP_MIN`] steps (spec §2.4). Every
-/// step has the work of its rhythm hour divided by four. Lazy stays on the
-/// current account until it is not usable and then calls [`choose`]. Eager also
-/// moves when [`choose`] names another account whose slack is at least
-/// [`SLACK_MARGIN_H`] × [`Rhythm::typical_hour`] below the current one's and
-/// [`early_move_allowed`] says yes: the plan starts from
+/// step has the work of its rhythm hour divided by four. Every policy leaves
+/// the current account when it is not usable and then calls [`choose`].
+/// WhenFull makes no other move; Lazy and Eager make the early moves
+/// [`early_move_due`] allows: Lazy only to an account at risk of losing quota,
+/// Eager to any account [`choose`] names whose slack is at least
+/// [`SLACK_MARGIN_H`] × [`Rhythm::typical_hour`] below the current one's, each
+/// when [`early_move_allowed`] says yes: the plan starts from
 /// [`Inputs::last_switch_at`] and [`Inputs::manual_hold_until`], so its first
 /// early move is the one [`crate::burn::decide::decide`] will make.
 ///
 /// An account without rates is played with `c = 0` and `s = 0`: it never fills
 /// in the plan and it is never the reason for an eager move, because its slack
 /// is unknown. The same holds for a capped account without a session rate. When
-/// [`Rhythm::typical_hour`] is 0.0 the margin has no unit, so there is no eager
-/// move at all and the eager plan is the lazy one. Weekly resets repeat every 7
+/// [`Rhythm::typical_hour`] is 0.0 the margin has no unit, so there is no early
+/// move at all and the three plans are the same. Weekly resets repeat every 7
 /// days from the account's reset time; a weekly reset at or before
 /// [`Inputs::now`] means that week is over: the account is played from 0 % with
 /// its next reset. A 5 h window opens at the first step with work after the
 /// previous one ended and lasts 5 h.
 ///
 /// An active account auto-burn may not use (`may_use` false) stays `current`
-/// under both policies while it is not [`blocked`]: neither plan leaves it by an
-/// eager move. Once it is blocked it is left, and it is never chosen again,
+/// under every policy while it is not [`blocked`]: no plan leaves it by an
+/// early move. Once it is blocked it is left, and it is never chosen again,
 /// because [`choose`] only takes usable accounts (spec §2.6: S1 still leaves it
 /// when it gets blocked).
 pub fn follow(inputs: &Inputs, policy: Policy) -> Plan {
@@ -464,11 +474,12 @@ pub(super) fn play(inputs: &Inputs, policy: Policy, walk: &Walk<'_>, typical: f6
 
         let choice = match current {
             Some(index) if !views[index].blocked(t) => {
-                if policy == Policy::Eager && typical > 0.0 && views[index].usable(t) {
-                    eager_move(
+                if views[index].usable(t) {
+                    early_move(
                         &views,
                         t,
                         index,
+                        policy,
                         typical,
                         last_switch,
                         inputs.manual_hold_until,
@@ -832,19 +843,46 @@ pub(super) fn early_move_allowed(
         && manual_hold_until.is_none_or(|until| until <= at)
 }
 
-/// The early move of the eager plan (spec §2.5, S2): the account [`choose`]
-/// names, when it is another one, its slack is at least the margin below the
-/// current account's, and [`early_move_allowed`] says yes. A target without
-/// known rates is never a reason to move.
-fn eager_move(
+/// Whether an early move (S2) to a target with `target_slack` is due while the
+/// active account has `current_slack` (spec §2.5): the target's slack is at
+/// least [`SLACK_MARGIN_H`] × `typical` below the active one's, and either
+/// early switching is on (`early`) or the target's slack is at most
+/// [`EXPIRY_CUSHION_H`] × `typical`. Then it is at risk of losing quota at its
+/// weekly reset: the slack counts only the usual working hours, and every hour
+/// the machines are off beyond them costs quota, while a switch costs only the
+/// switch. Never while `typical` is 0.0: the margin has no unit then. The one copy of the rule:
+/// [`crate::burn::decide::decide`] and both plans use it.
+pub(super) fn early_move_due(
+    early: bool,
+    target_slack: f64,
+    current_slack: f64,
+    typical: f64,
+) -> bool {
+    typical > 0.0
+        && target_slack <= current_slack - SLACK_MARGIN_H * typical
+        && (early || target_slack <= EXPIRY_CUSHION_H * typical)
+}
+
+/// The early move of a plan (spec §2.5, S2): the account [`choose`] names,
+/// when it is another one, [`early_move_due`] says yes for `policy` (eager:
+/// early switching on) and [`early_move_allowed`] says yes. A target without
+/// known rates is never a reason to move, and WhenFull never moves early.
+#[allow(clippy::too_many_arguments)]
+fn early_move(
     views: &[View<'_>],
     at: DateTime<Utc>,
     current: usize,
+    policy: Policy,
     typical: f64,
     last_switch: Option<DateTime<Utc>>,
     manual_hold_until: Option<DateTime<Utc>>,
     walk: &Walk<'_>,
 ) -> Option<usize> {
+    let early = match policy {
+        Policy::WhenFull => return None,
+        Policy::Lazy => false,
+        Policy::Eager => true,
+    };
     if !early_move_allowed(last_switch, manual_hold_until, at) {
         return None;
     }
@@ -854,11 +892,7 @@ fn eager_move(
     }
     let target_slack = views[target].slack(at, walk)?;
     let current_slack = views[current].slack(at, walk)?;
-    if target_slack <= current_slack - SLACK_MARGIN_H * typical {
-        Some(target)
-    } else {
-        None
-    }
+    early_move_due(early, target_slack, current_slack, typical).then_some(target)
 }
 
 /// The first weekly reset after `at`: the account's reset time repeated every
@@ -977,6 +1011,36 @@ pub(crate) mod testkit {
             last_switch_at: None,
             manual_hold_until: None,
         }
+    }
+
+    /// `inputs()` with no account at risk of losing quota: AC at 72 % needs
+    /// 28 / 4 = 7 USD of its 19, LB at 64 % needs 36 / 4 = 9 USD of its 24.75,
+    /// so their slacks are 12.0 and 15.75 USD, above the cushion of 8 typical
+    /// hours, and PR's is 42. The eager plan moves to AC at once; the lazy plan
+    /// stays on PR until AC's slack is down to the cushion.
+    pub(crate) fn calm() -> Inputs {
+        let mut inputs = inputs();
+        inputs.accounts[1].week_percent = 72.0;
+        inputs.accounts[2].week_percent = 64.0;
+        inputs
+    }
+
+    /// Two accounts that reset together, where early switching pays: AC and
+    /// LB uncapped (`c` = 4), both at 30 % and both resetting on Wednesday
+    /// 13:00, so each has a slack of 17.5 USD; PR at 80 %. The lazy plan waits
+    /// on PR until AC is down to the cushion and then cannot empty both before
+    /// their reset; the eager plan starts at once. Lazy blocks 6.5 USD with 10
+    /// switches, eager none with 24.
+    pub(crate) fn crowded() -> Inputs {
+        let mut inputs = inputs();
+        inputs.accounts[0].week_percent = 80.0;
+        for account in &mut inputs.accounts[1..] {
+            account.rates = Some(Rates::given(4.0, None));
+            account.session = None;
+            account.week_percent = 30.0;
+            account.week_resets_at = utc("2026-11-18T13:00:00Z");
+        }
+        inputs
     }
 }
 
@@ -1177,40 +1241,123 @@ mod tests {
     }
 
     #[test]
-    fn lazy_stays_until_blocked() {
-        let plan = follow(&inputs(), Policy::Lazy);
-        assert_eq!(plan.segments[0].account.as_deref(), Some("PR"));
-        assert_eq!(plan.segments[0].from, now());
-        let full = plan.full_at.get("PR").copied().expect("PR fills");
-        assert_eq!(plan.segments[0].to, full + Duration::minutes(STEP_MIN));
-        assert_ne!(plan.segments[1].account.as_deref(), Some("PR"));
+    fn the_calm_setup_has_no_account_at_risk() {
+        let inputs = calm();
+        let slacks: Vec<f64> = inputs
+            .accounts
+            .iter()
+            .map(|account| slack(account, &inputs).expect("the setup's rates"))
+            .collect();
+        for (slack, expected) in slacks.iter().zip([42.0, 12.0, 15.75]) {
+            assert!((slack - expected).abs() < EPS, "{slacks:?}");
+        }
     }
 
     #[test]
-    fn eager_is_blocked_less_than_lazy_when_windows_are_small() {
-        let inputs = inputs();
+    fn lazy_stays_until_blocked() {
+        // PR at 95 % fills after 2.5 USD, at 10:30, before AC's slack of 12.0
+        // is down to the cushion of 8; the eager plan leaves PR at once.
+        let mut inputs = calm();
+        inputs.accounts[0].week_percent = 95.0;
+        let plan = follow(&inputs, Policy::Lazy);
+        assert_eq!(plan.segments[0].account.as_deref(), Some("PR"));
+        assert_eq!(plan.segments[0].from, now());
+        let full = plan.full_at.get("PR").copied().expect("PR fills");
+        assert_eq!(full, utc("2026-11-16T10:15:00Z"));
+        assert_eq!(plan.segments[0].to, full + Duration::minutes(STEP_MIN));
+        assert_ne!(plan.segments[1].account.as_deref(), Some("PR"));
+
+        let eager = follow(&inputs, Policy::Eager);
+        assert_eq!(eager.segments[0].account.as_deref(), Some("AC"));
+    }
+
+    #[test]
+    fn lazy_moves_at_once_to_an_account_at_risk() {
+        // AC's slack is -6.0: every hour it does not work loses quota at its
+        // reset, so the lazy plan leaves PR at once, as the eager one does.
+        let plan = follow(&inputs(), Policy::Lazy);
+        assert_eq!(plan.segments[0].account.as_deref(), Some("AC"));
+        assert_eq!(plan.segments[0].from, now());
+    }
+
+    #[test]
+    fn lazy_moves_when_the_slack_reaches_the_cushion() {
+        // In the calm setup the lazy plan stays on PR while AC's slack is above
+        // the cushion and moves to AC at the first step at which it is not.
+        let inputs = calm();
+        let plan = follow(&inputs, Policy::Lazy);
+        assert_eq!(plan.segments[0].account.as_deref(), Some("PR"));
+        assert_eq!(plan.segments[1].account.as_deref(), Some("AC"));
+        let moved = plan.segments[1].from;
+        let ac_slack_at = |at: DateTime<Utc>| {
+            let mut later = inputs.clone();
+            later.now = at;
+            slack(&later.accounts[1], &later).expect("AC has rates")
+        };
+        let cushion = EXPIRY_CUSHION_H * inputs.rhythm.typical_hour();
+        assert!(ac_slack_at(moved) <= cushion, "{}", ac_slack_at(moved));
+        let before = moved - Duration::minutes(STEP_MIN);
+        assert!(ac_slack_at(before) > cushion, "{}", ac_slack_at(before));
+    }
+
+    #[test]
+    fn lazy_respects_the_dwell_and_the_manual_hold() {
+        // AC loses quota, but a switch 10 minutes ago or a manual hold for the
+        // next hour keeps the lazy plan on PR until they end.
+        let mut inputs = inputs();
+        inputs.last_switch_at = Some(now() - Duration::minutes(10));
+        let plan = follow(&inputs, Policy::Lazy);
+        assert_eq!(plan.segments[0].account.as_deref(), Some("PR"));
+        assert_eq!(plan.segments[1].account.as_deref(), Some("AC"));
+        assert_eq!(plan.segments[1].from, now() + Duration::minutes(30));
+
+        let mut inputs = super::testkit::inputs();
+        inputs.manual_hold_until = Some(now() + Duration::hours(1));
+        let plan = follow(&inputs, Policy::Lazy);
+        assert_eq!(plan.segments[0].account.as_deref(), Some("PR"));
+        assert_eq!(plan.segments[1].account.as_deref(), Some("AC"));
+        assert_eq!(plan.segments[1].from, now() + Duration::hours(1));
+    }
+
+    #[test]
+    fn eager_is_blocked_less_than_lazy_when_two_accounts_reset_together() {
+        let inputs = crowded();
         let lazy = follow(&inputs, Policy::Lazy);
         let eager = follow(&inputs, Policy::Eager);
+        assert!((lazy.blocked_usd - 6.5).abs() < EPS, "{}", lazy.blocked_usd);
         assert!(
             (eager.blocked_usd - 0.0).abs() < EPS,
             "{}",
             eager.blocked_usd
         );
-        assert!(lazy.blocked_usd > 15.0, "{}", lazy.blocked_usd);
+        assert_eq!(lazy.switches, 10);
+        assert_eq!(eager.switches, 24);
+    }
+
+    #[test]
+    fn in_the_calm_setup_the_cushion_leaves_eager_nothing_to_gain() {
+        let inputs = calm();
+        let lazy = follow(&inputs, Policy::Lazy);
+        let eager = follow(&inputs, Policy::Eager);
+        assert!(
+            (lazy.blocked_usd - eager.blocked_usd).abs() < EPS,
+            "{} vs {}",
+            lazy.blocked_usd,
+            eager.blocked_usd
+        );
     }
 
     #[test]
     fn follow_is_unchanged_by_the_split() {
-        // The values of Task 5's setup before the one player replaced the loop.
+        // The values of Task 5's setup before the one player replaced the loop;
+        // since 1.5.1 the lazy plan also moves to AC and LB while they are at
+        // risk of losing quota, and in this setup that is every early move the
+        // eager plan makes.
         let inputs = inputs();
         let lazy = follow(&inputs, Policy::Lazy);
         let eager = follow(&inputs, Policy::Eager);
-        assert!(
-            (lazy.blocked_usd - 21.75).abs() < EPS,
-            "{}",
-            lazy.blocked_usd
-        );
-        assert_eq!(lazy.switches, 19);
+        assert!((lazy.blocked_usd - 0.0).abs() < EPS, "{}", lazy.blocked_usd);
+        assert_eq!(lazy.switches, 58);
         assert!(
             (eager.blocked_usd - 0.0).abs() < EPS,
             "{}",
@@ -1232,7 +1379,7 @@ mod tests {
 
     #[test]
     fn followed_is_eager_only_when_early() {
-        let inputs = inputs();
+        let inputs = crowded();
         let lazy = follow(&inputs, Policy::Lazy);
         let eager = follow(&inputs, Policy::Eager);
         assert_ne!(eager.segments, lazy.segments, "the two policies differ");
@@ -1249,10 +1396,11 @@ mod tests {
             .iter()
             .map(|account| View::of(account, now()))
             .collect();
-        eager_move(
+        early_move(
             &views,
             now(),
             0, // PR
+            Policy::Eager,
             inputs.rhythm.typical_hour(),
             Some(now() - Duration::minutes(minutes)),
             None,
@@ -1356,7 +1504,8 @@ mod tests {
 
     #[test]
     fn a_week_that_resets_inside_the_plan_starts_at_zero() {
-        let mut inputs = inputs();
+        // The calm setup, so that the lazy plan fills PR before its reset.
+        let mut inputs = calm();
         let reset = inputs.now + Duration::hours(2);
         inputs.accounts[0].week_percent = 99.0;
         inputs.accounts[0].week_resets_at = reset;

@@ -6,6 +6,24 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-11-23
+
+### Fixed
+
+- Auto-burn now moves to an account at risk of losing quota at its weekly reset: one with 8
+  typical working hours of slack or less, so time with the machines off does not cost its quota.
+  It does so also while other early switches do not pay, and goes back to it once its 5h window
+  has reset. Before, it stayed on the active account until that was full and let the other
+  account's quota expire. The 30-minute dwell and a manual hold still apply.
+- The Forecast's "only when full" figures and the suggestion's "Staying on … is expected to let
+  … expire" sentence keep meaning the plan that switches only at 100 %.
+
+### Changed
+
+- The regime's words `switching before 100 % does not pay` and `switching before 100 % pays` are
+  now `switches early only for quota at risk of expiring` and `switches early whenever it pays`;
+  Settings → Auto-burn says `no other early switches` while early switching is off.
+
 ## [1.5.0] - 2026-11-22
 
 ### Added

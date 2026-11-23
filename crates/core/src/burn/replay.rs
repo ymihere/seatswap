@@ -244,7 +244,7 @@ mod tests {
 
     use chrono::{Duration, FixedOffset};
 
-    use crate::burn::plan::testkit::{inputs, now, offset, EPS};
+    use crate::burn::plan::testkit::{crowded, inputs, now, offset, EPS};
     use crate::history::{LimitSample, Source, TokenRecord};
     use crate::project::ProjectKey;
     use crate::stats::tests::append_codex_records;
@@ -272,9 +272,21 @@ mod tests {
         BTreeMap<AccountRef, Rates>,
         Range,
     ) {
+        setup_from(inputs())
+    }
+
+    /// [`setup`] for other accounts: each account's first sample has its
+    /// week-% from `inputs`.
+    fn setup_from(
+        inputs: crate::burn::plan::Inputs,
+    ) -> (
+        tempfile::TempDir,
+        HistoryDir,
+        BTreeMap<AccountRef, Rates>,
+        Range,
+    ) {
         let dir = tempfile::tempdir().expect("temp dir");
         let history = HistoryDir::at(dir.path(), "atlas");
-        let inputs = inputs();
         let range = Range {
             from: now(),
             to: now() + Duration::days(7) - Duration::hours(1),
@@ -284,7 +296,7 @@ mod tests {
             let mut limits = vec![LimitSample {
                 k: LimitKind::WeeklyAll,
                 m: None,
-                p: 0.0,
+                p: state.week_percent,
                 r: Some(state.week_resets_at),
                 b: false,
             }];
@@ -354,17 +366,27 @@ mod tests {
 
     #[test]
     fn replay_lazy_and_eager_differ_as_in_the_model() {
-        let (_dir, history, rates, range) = setup();
+        // The crowded setup: AC and LB reset together on Wednesday, and the
+        // eager plan starts on them at once.
+        let inputs = crowded();
+        let (_dir, history, rates, range) = setup_from(inputs);
         let lazy = replay(&history, &range, &rates, &[], Policy::Lazy, &prices()).expect("replay");
         let eager =
             replay(&history, &range, &rates, &[], Policy::Eager, &prices()).expect("replay");
 
+        // Within the recorded week neither blocks work, but the lazy plan
+        // leaves 4 % of PR unused at its Saturday reset, the eager plan 2 %,
+        // with many more switches.
+        assert!(lazy.blocked_usd.abs() < EPS, "{}", lazy.blocked_usd);
+        assert!(eager.blocked_usd.abs() < EPS, "{}", eager.blocked_usd);
+        let pr = account_ref("PR");
+        assert!((lazy.expired[&pr] - 4.0).abs() < EPS, "{:?}", lazy.expired);
         assert!(
-            (eager.blocked_usd - 0.0).abs() < EPS,
-            "{}",
-            eager.blocked_usd
+            (eager.expired[&pr] - 2.0).abs() < EPS,
+            "{:?}",
+            eager.expired
         );
-        assert!(lazy.blocked_usd > 15.0, "{}", lazy.blocked_usd);
+        assert_eq!((lazy.switches, eager.switches), (11, 27));
         for result in [&lazy, &eager] {
             let worked = result.worked_usd + result.blocked_usd;
             assert!((worked - 92.0).abs() < EPS, "{worked}");

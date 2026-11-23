@@ -50,6 +50,11 @@ pub fn switches_per_day(switches: u32) -> f64 {
 pub const MIN_DWELL_MIN: i64 = 30;
 /// The margin of S2, in typical working hours (spec §2.5).
 pub const SLACK_MARGIN_H: f64 = 2.0;
+/// An account whose slack is this many typical working hours or less is at
+/// risk of losing quota at its weekly reset: the machines may be off longer
+/// than the rhythm expects. S2 moves to it even while early switching is off
+/// (spec §7.4).
+pub const EXPIRY_CUSHION_H: f64 = 8.0;
 /// A switch made by hand holds the early rule back this many hours (spec §2.5).
 pub const MANUAL_HOLD_H: i64 = 4;
 /// Early switching must save at least this much, in typical working hours

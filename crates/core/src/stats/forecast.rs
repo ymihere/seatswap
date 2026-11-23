@@ -101,7 +101,7 @@ pub struct ForecastAccount {
     pub resets_at: DateTime<Utc>,
     /// What switching only when full expects to have used at the reset.
     pub only_when_full_expected: Option<f64>,
-    /// The money of the percent the lazy plan leaves unused at the reset, from
+    /// The money of the percent "only when full" leaves unused at the reset, from
     /// the expired money of a window ending at 100 % minus that percent:
     /// `window_money(price, 100 − left_at_reset).expired`. `None` without a
     /// price or without known rates.
@@ -121,15 +121,15 @@ pub struct Lane {
 
 /// The two plans, the accounts' forecasts, the lanes and the sentence. The
 /// `planned` plan is the one auto-burn follows now: eager when the regime says
-/// early switching pays, else lazy; the other is the lazy plan, "only when
-/// full" (spec §3.4).
+/// early switching pays, else lazy; the other is [`Policy::WhenFull`], "only
+/// when full" (spec §3.4).
 pub fn forecast<Tz: TimeZone + Copy>(
     ctx: &Ctx<Tz>,
     inputs: &Inputs,
     regime: &Regime,
 ) -> Result<Forecast, StatsError> {
     let planned = followed(inputs, regime);
-    let lazy = follow(inputs, Policy::Lazy);
+    let when_full = follow(inputs, Policy::WhenFull);
     let from = inputs.now;
     let to = inputs.now + Duration::hours(HORIZON_H);
 
@@ -262,12 +262,15 @@ pub fn forecast<Tz: TimeZone + Copy>(
                 None
             };
             let only_when_full_expected = if known {
-                lazy.left_at_reset.get(&state.id).map(|left| 100.0 - left)
+                when_full
+                    .left_at_reset
+                    .get(&state.id)
+                    .map(|left| 100.0 - left)
             } else {
                 None
             };
             let only_when_full_expires = if known {
-                match (prices[index], lazy.left_at_reset.get(&state.id)) {
+                match (prices[index], when_full.left_at_reset.get(&state.id)) {
                     (Some(price), Some(left)) => Some(window_money(price, 100.0 - *left).expired),
                     _ => None,
                 }
@@ -288,7 +291,7 @@ pub fn forecast<Tz: TimeZone + Copy>(
         .collect();
 
     let planned_money = expire_money(&inputs.accounts, &prices, &planned.left_at_reset);
-    let lazy_money = expire_money(&inputs.accounts, &prices, &lazy.left_at_reset);
+    let when_full_money = expire_money(&inputs.accounts, &prices, &when_full.left_at_reset);
     // The plan on the page: its blocked work in the hours the rhythm makes of
     // it, with the one dollars-to-hours function. A typical hour of 0.0 means
     // no hours can be computed: the page shows "—" with the reason, never 0.
@@ -299,12 +302,12 @@ pub fn forecast<Tz: TimeZone + Copy>(
         };
     let kpis = ForecastKpis {
         expire_planned: planned_money,
-        expire_only_when_full: lazy_money,
+        expire_only_when_full: when_full_money,
         blocked_hours,
         blocked_hours_missing,
         switches: planned.switches,
         switches_per_day: crate::burn::switches_per_day(planned.switches),
-        switches_only_when_full: lazy.switches,
+        switches_only_when_full: when_full.switches,
     };
 
     let lanes: Vec<Lane> = inputs
@@ -591,7 +594,7 @@ mod tests {
     use super::*;
 
     use crate::burn::decide::RegimeWhy;
-    use crate::burn::plan::testkit::{inputs, week};
+    use crate::burn::plan::testkit::{calm, crowded, inputs, week};
     use crate::burn::{usd_hours, Rates, HORIZON_H};
     use crate::history::{LimitSample, Source};
     use crate::store::Account;
@@ -694,7 +697,7 @@ mod tests {
         let ctx = context(&tiny, &accounts);
         let inputs = inputs();
         let planned = follow(&inputs, Policy::Eager);
-        let lazy = follow(&inputs, Policy::Lazy);
+        let when_full = follow(&inputs, Policy::WhenFull);
         let forecast = forecast(&ctx, &inputs, &regime(true)).expect("the forecast");
 
         assert_eq!(forecast.lanes.len(), inputs.accounts.len());
@@ -739,7 +742,7 @@ mod tests {
         assert_eq!(forecast.kpis.blocked_hours, Some(blocked_hours));
         assert_eq!(forecast.kpis.blocked_hours_missing, None);
         assert_eq!(forecast.kpis.switches, planned.switches);
-        assert_eq!(forecast.kpis.switches_only_when_full, lazy.switches);
+        assert_eq!(forecast.kpis.switches_only_when_full, when_full.switches);
     }
 
     /// "about N a day" is the switch count of the plan the page shows, not
@@ -751,7 +754,7 @@ mod tests {
         let tiny = tiny();
         let accounts = stored_accounts(&tiny);
         let ctx = context(&tiny, &accounts);
-        let inputs = inputs();
+        let inputs = crowded();
         let lazy = follow(&inputs, Policy::Lazy);
         let eager = follow(&inputs, Policy::Eager);
         assert_ne!(
@@ -908,8 +911,11 @@ mod tests {
             .find(|account| account.id == "AC")
             .expect("AC's row");
         assert!(close(account.expected.expect("AC's expectation"), 80.0));
-        let lazy = follow(&inputs, Policy::Lazy);
-        let left = *lazy.left_at_reset.get("AC").expect("AC's lazy entry");
+        let when_full = follow(&inputs, Policy::WhenFull);
+        let left = *when_full
+            .left_at_reset
+            .get("AC")
+            .expect("AC's only-when-full entry");
         assert!(close(left, 20.0), "left {left}");
         assert!(close(
             account.only_when_full_expires.expect("AC's money"),
@@ -1271,7 +1277,7 @@ mod tests {
         let tiny = tiny();
         let accounts = stored_accounts(&tiny);
         let ctx = context(&tiny, &accounts);
-        let inputs = inputs();
+        let inputs = calm();
         let planned = follow(&inputs, Policy::Lazy);
         let expected = usd_hours(planned.blocked_usd, inputs.rhythm.typical_hour())
             .expect("the test rhythm has working hours");
@@ -1490,15 +1496,15 @@ mod tests {
             .ends_with("until AC is usable again Mon 11:00."));
     }
 
-    /// The planned plan is the eager one when early switching pays. The Task 5
-    /// setup (`inputs()`: PR uncapped, AC and LB capped, `week(15)`) switches
-    /// more often eagerly than lazily.
+    /// The planned plan is the eager one when early switching pays. The crowded
+    /// setup (`crowded()`: AC and LB resetting together) switches more often
+    /// eagerly than lazily.
     #[test]
     fn the_planned_plan_is_eager_when_early_switching_pays() {
         let tiny = tiny();
         let accounts = stored_accounts(&tiny);
         let ctx = context(&tiny, &accounts);
-        let inputs = inputs();
+        let inputs = crowded();
         let eager = follow(&inputs, Policy::Eager);
         let lazy = follow(&inputs, Policy::Lazy);
         assert!(
@@ -1511,7 +1517,10 @@ mod tests {
         let early = regime(true);
         let page = forecast(&ctx, &inputs, &early).expect("the forecast");
         assert_eq!(page.kpis.switches, eager.switches);
-        assert_eq!(page.kpis.switches_only_when_full, lazy.switches);
+        assert_eq!(
+            page.kpis.switches_only_when_full,
+            follow(&inputs, Policy::WhenFull).switches
+        );
         let blocked_hours = usd_hours(eager.blocked_usd, inputs.rhythm.typical_hour())
             .expect("the test rhythm has working hours");
         assert_eq!(page.kpis.blocked_hours, Some(blocked_hours));

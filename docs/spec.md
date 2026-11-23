@@ -504,7 +504,7 @@ no modes and no tuning settings: every threshold is a constant in the code (see 
 | # | Trigger | What happens |
 |---|---|---|
 | S1 | The active account is blocked, or there is none | switch at once to the usable account with the least slack |
-| S2 | Another usable account has clearly less slack | only while early switching is on: switch to it at a quiet moment (below) |
+| S2 | Another usable account has clearly less slack | when it is at risk of losing quota (its slack is 8 typical working hours or less): switch to it; otherwise only while early switching is on. At a quiet moment (below), at once when its slack is 0 or less |
 | S3 | Nothing is usable | no switch; the "All accounts are full" notification of §7.5, and the reset poll of §7.1 |
 
 - **Blocked** means the week or the 5h window is at 100 % or more, the login has ended, or a
@@ -515,8 +515,13 @@ no modes and no tuning settings: every threshold is a constant in the code (see 
   like one without rates: the fixed order is used instead, capped accounts with an open window
   first, then the others, each by the earlier weekly reset and then the account id.
 - **S2** needs another usable account whose slack is at least 2 typical working hours below the
-  active account's, and at least 30 minutes since the last switch of any kind. It switches only
-  when the expected saved hours are worth it (below).
+  active account's, at least 30 minutes since the last switch of any kind, and no manual hold.
+  When that account's slack is 8 typical working hours or less, it is at risk of losing quota at its
+  weekly reset: slack counts only the usual working hours, and every hour the machines are off
+  beyond them costs quota. So auto-burn switches to it whether early switching is on or not, also
+  back to it once its 5h window has reset. Keeping quota from expiring comes before saving a
+  switch. With a slack above that cushion it switches only when the expected saved hours are worth
+  it (below).
 - **Seeing 100 % quickly:** the active account is polled every 30 s while its binding limit is at
   90 % or more and below 100 % (§7.1), and the status line feed (§7.6) brings the live numbers
   without a request.
@@ -547,16 +552,17 @@ no modes and no tuning settings: every threshold is a constant in the code (see 
 
 While early switching is on, the pop-up's next line, `burn-next.json`, the status line's
 auto-burn segment and `status --json`'s `next` follow the plan auto-burn follows — the eager plan —
-and otherwise the lazy plan that switches only at 100 %. That is the same plan the Forecast shows.
-The suggestion's "Staying on …" sentence is the lazy plan's — the plan that switches only at
-100 % — not the followed plan.
+and otherwise the lazy plan, which leaves an account before 100 % only for one at risk of losing
+quota. That is the same plan the Forecast shows. The suggestion's "Staying on …" sentence is the
+plan that switches only at 100 % ("only when full"), not the followed plan.
 
 #### 7.4.1 The regime
 
 Once an hour seatswap plans the next 7 days twice: the **lazy** plan stays on an account until it
-is blocked and then takes the one with the least slack; the **eager** plan also takes the usable
-account with the least slack when it has at least 2 typical working hours less slack, with at most
-one switch per 30 minutes. The eager plan starts from the real last switch and the manual hold or
+is blocked and then takes the one with the least slack, and it moves earlier only to an account
+at risk of losing quota (S2 with a slack of 8 typical working hours or less); the **eager** plan also takes the usable
+account with the least slack when it has at least 2 typical working hours less slack. Both make
+at most one early move per 30 minutes. The eager plan starts from the real last switch and the manual hold or
 pause (§7.4.3): its first early move comes no sooner than 30 minutes after that switch and not
 before the hold ends, exactly when S2 may switch. So the pop-up, `burn-next.json` and the status
 line never name a switch for "now" that auto-burn will not make yet. Early switching (S2) is on
@@ -618,11 +624,12 @@ The measured cost of a switch comes from the target's percent gained in the 10 m
 minus the API dollars worked in that window at `c`. A window that holds an Anthropic record without
 a price is left out whole (documented rule), never measured with that work missing.
 
-While any of these is missing, auto-burn switches only when the active account is full. With
-`readSessions` off there is no work to price: no rates are learned, the regime says `reading
-sessions is off: no rates are learned`, and auto-burn switches only when the active account is full. The
-regime's words are `learning`, `no switch measured yet`, `switching before 100 % does not pay` or
-`switching before 100 % pays`.
+While any of these is missing, auto-burn switches only when the active account is full or another
+account is at risk of losing quota. With `readSessions` off there is no work to price: no rates are learned,
+the regime says `reading sessions is off: no rates are learned`, and auto-burn switches only when
+the active account is full. The
+regime's words are `learning`, `no switch measured yet`, `switches early only for quota at risk of expiring` or
+`switches early whenever it pays`. Settings → Auto-burn adds `no other early switches` while early switching is off.
 
 #### 7.4.2 Quiet moments
 
@@ -667,8 +674,8 @@ minutes are not shown (`3d 4h`); `about 2h` keeps its word.
 - **An automatic switch** (when `notifyOnSwitch` is on): `Auto-burn: now on PR. AC is full until
   14:40.` or `Auto-burn: now on PR: its week resets on Mon 02:00.`
 - **A suggestion** (auto-burn off): `Switch to AC now: its 5h window is open and its week resets
-  on Mon 02:00.` When the plan that switches only at 100 % — the lazy plan, not the plan auto-burn
-  follows — expects more than 1 % of the target's week to be left unused at its reset, it adds
+  on Mon 02:00.` When the plan that switches only at 100 % ("only when full"), not the plan auto-burn
+  follows, expects more than 1 % of the target's week to be left unused at its reset, it adds
   ` Staying on PR is expected to let 12 % of AC expire.` The pop-up shows the same sentence and a
   [Switch] button; the desktop notification is sent once per target and hour.
 - **The reason of a switch:** `AC is full until 14:40`, `its 5h window is open and its week
@@ -1991,7 +1998,7 @@ weeks of history that plan reads. Below it:
 
 - **Four numbers**: `Expected to expire this week`, the money expected to expire with auto-burn's plan
   as it is set now (eager when early switching pays, else lazy); `With “only when full”`, the same
-  when switching only when an account is full (the lazy plan); `Hours with no usable account`, the
+  when switching only when an account is full; `Hours with no usable account`, the
   hours of this plan with no usable account; and `Switches planned`, the switches planned with
   `about N a day · N with “only when full”` below it. One sentence for all accounts together follows
   them.

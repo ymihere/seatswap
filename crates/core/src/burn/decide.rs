@@ -5,13 +5,10 @@
 use chrono::{DateTime, Duration, Utc};
 
 use super::plan::{
-    blocked, choose, early_move_allowed, follow, rates_known, rhythm_walk, slack, usable_again,
-    Inputs, PlanError, Policy,
+    blocked, choose, early_move_allowed, early_move_due, follow, rates_known, rhythm_walk, slack,
+    usable_again, Inputs, PlanError, Policy,
 };
-use super::{
-    usd_hours, FRESH_MIN, GAIN_FACTOR, HORIZON_H, MIN_COST_SAMPLES, MIN_GAIN_H, SLACK_MARGIN_H,
-    STEP_MIN,
-};
+use super::{usd_hours, FRESH_MIN, GAIN_FACTOR, HORIZON_H, MIN_COST_SAMPLES, MIN_GAIN_H, STEP_MIN};
 
 /// The measured cost of one switch (spec §2.13): the extra API dollars of work and the
 /// number of switches the mean came from.
@@ -176,11 +173,13 @@ pub fn regime(situation: &Situation) -> Regime {
 ///    [`Reason::NoneActive`] when there is no active account), else
 ///    [`Decision::AllFull`];
 /// 4. a manual hold in the future, or the last switch less than
-///    [`MIN_DWELL_MIN`] ago ([`early_move_allowed`], the rule the eager plan
-///    plays) → [`Decision::Stay`];
-/// 5. early switching ([`Regime::early`]) and [`choose`] names another account
-///    whose slack is at least [`SLACK_MARGIN_H`] × the typical hour below the
-///    active one's: with no
+///    [`MIN_DWELL_MIN`] ago ([`early_move_allowed`], the rule both plans
+///    play) → [`Decision::Stay`];
+/// 5. [`choose`] names another account and [`early_move_due`] says yes: its
+///    slack is at least [`crate::burn::SLACK_MARGIN_H`] × the typical hour
+///    below the active one's, and early switching is on ([`Regime::early`]) or
+///    the target's slack is at most [`crate::burn::EXPIRY_CUSHION_H`] × the
+///    typical hour (it is at risk of losing quota): with no
 ///    busy tied session → [`Decision::Switch`] (`WindowOpen` when the target has
 ///    a 5 h limit, else `ResetNear`); with one → [`Decision::Wait`] until the
 ///    rhythm's work from now reaches the target's slack. A slack of 0 or less
@@ -235,7 +234,7 @@ pub fn decide(situation: &Situation, regime: &Regime) -> Decision {
         return Decision::Stay;
     }
 
-    if !regime.early || !active.may_use {
+    if !active.may_use {
         return Decision::Stay;
     }
     let Some(to) = choose(inputs, now) else {
@@ -251,8 +250,12 @@ pub fn decide(situation: &Situation, regime: &Regime) -> Decision {
     else {
         return Decision::Stay;
     };
-    let margin = SLACK_MARGIN_H * inputs.rhythm.typical_hour();
-    if target_slack > active_slack - margin {
+    if !early_move_due(
+        regime.early,
+        target_slack,
+        active_slack,
+        inputs.rhythm.typical_hour(),
+    ) {
         return Decision::Stay;
     }
     let reason = if target.session.is_some() {
@@ -312,9 +315,9 @@ fn latest_reaching(inputs: &Inputs, target_usd: f64) -> DateTime<Utc> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::burn::plan::testkit::{account, inputs, now, week, EPS};
+    use crate::burn::plan::testkit::{account, calm, crowded, inputs, now, utc, week, EPS};
     use crate::burn::plan::SessionState;
-    use crate::burn::Rates;
+    use crate::burn::{Rates, SLACK_MARGIN_H};
 
     fn situation(inputs: Inputs) -> Situation {
         Situation {
@@ -455,7 +458,9 @@ mod tests {
 
     #[test]
     fn without_rates_there_is_no_early_switch() {
-        let mut inputs = inputs();
+        // The calm setup: AC, which the fixed order names, has slack above the
+        // cushion.
+        let mut inputs = calm();
         inputs.accounts[2].rates = None;
         let situation = situation(inputs);
         let state = regime(&situation);
@@ -479,7 +484,7 @@ mod tests {
 
     #[test]
     fn without_a_measured_cost_there_is_no_early_switch() {
-        let mut situation = situation(inputs());
+        let mut situation = situation(calm());
         situation.cost = None;
         let state = regime(&situation);
         assert_eq!(state.why, RegimeWhy::NoCostYet);
@@ -495,11 +500,38 @@ mod tests {
     }
 
     #[test]
-    fn small_windows_make_early_switching_pay() {
-        let situation = situation(inputs());
+    fn two_accounts_that_reset_together_make_early_switching_pay() {
+        // The crowded setup: eager is blocked 6.5 h less than lazy, with 14
+        // more switches at 0.05 h each, so the gain is above both rules.
+        let situation = situation(crowded());
         let state = regime(&situation);
         assert!(state.early);
         assert_eq!(state.why, RegimeWhy::Pays);
+        assert!((state.lazy_blocked_h - 6.5).abs() < EPS, "{state:?}");
+        assert!(state.eager_blocked_h.abs() < EPS, "{state:?}");
+        assert_eq!(state.extra_switches, 14);
+        assert_eq!(
+            decide(&situation, &state),
+            Decision::Switch {
+                to: "AC".to_string(),
+                reason: Reason::ResetNear,
+            }
+        );
+    }
+
+    #[test]
+    fn a_target_within_the_cushion_is_switched_to_without_early_switching() {
+        // AC at 40 % and LB at 20 % have slacks of 4.0 and 4.75 USD: above 0,
+        // but within the cushion of 8 typical hours, so a few hours with the
+        // machines off would cost quota. Early switching does not pay here.
+        let mut inputs = calm();
+        inputs.accounts[1].week_percent = 40.0;
+        inputs.accounts[2].week_percent = 20.0;
+        let ac_slack = slack(&inputs.accounts[1], &inputs).expect("AC has rates");
+        assert!((ac_slack - 4.0).abs() < EPS, "{ac_slack}");
+        let situation = situation(inputs);
+        let state = regime(&situation);
+        assert!(!state.early, "{state:?}");
         assert_eq!(
             decide(&situation, &state),
             Decision::Switch {
@@ -562,16 +594,12 @@ mod tests {
 
     #[test]
     fn a_tied_busy_session_makes_it_wait() {
-        let mut inputs = inputs();
-        // AC at 48 % still needs 52 / 4 = 13 USD. Its 19 windows before its reset
-        // take 19 USD, so its slack is 19 - 13 = 6.0 USD: six working hours at the
-        // test rhythm's 1.0 USD per working hour. LB's c of 10 lowers what its
-        // week still needs to 100 / 10 = 10 USD, so its slack is 23.75 - 10 =
-        // 13.75 USD and AC (6.0) stays the account choose() names.
-        inputs.accounts[1].week_percent = 48.0;
-        inputs.accounts[2].rates = Some(Rates::given(10.0, Some(80.0)));
+        // The crowded setup: AC's slack is 17.5 USD, 17.5 working hours at the
+        // test rhythm's 1.0 USD per working hour (14 on Monday from 08:00, then
+        // Tuesday 07:00 to 10:30), and choose() names it.
+        let inputs = crowded();
         let ac_slack = slack(&inputs.accounts[1], &inputs).expect("AC has rates");
-        assert!((ac_slack - 6.0).abs() < EPS, "{ac_slack}");
+        assert!((ac_slack - 17.5).abs() < EPS, "{ac_slack}");
         assert_eq!(choose(&inputs, now()), Some("AC".to_string()));
 
         let mut situation = situation(inputs);
@@ -582,9 +610,9 @@ mod tests {
             decide(&situation, &state),
             Decision::Wait {
                 to: "AC".to_string(),
-                latest: now() + Duration::hours(6),
+                latest: utc("2026-11-17T10:30:00Z"),
                 tied_busy: 1,
-                reason: Reason::WindowOpen,
+                reason: Reason::ResetNear,
             }
         );
     }
@@ -598,8 +626,79 @@ mod tests {
         let ac_slack =
             slack(&situation.inputs.accounts[1], &situation.inputs).expect("AC has rates");
         assert!(ac_slack <= 0.0, "{ac_slack}");
+        for state in [regime(&situation), pays()] {
+            assert_eq!(
+                decide(&situation, &state),
+                Decision::Switch {
+                    to: "AC".to_string(),
+                    reason: Reason::WindowOpen,
+                },
+                "{state:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_account_that_loses_quota_is_switched_to_without_early_switching() {
+        // AC's slack is -6.0: it loses quota at its reset for every hour it does
+        // not work. Whatever keeps early switching off, auto-burn moves to it.
+        let mut situation = situation(inputs());
         let state = regime(&situation);
-        assert!(state.early);
+        assert_eq!(state.why, RegimeWhy::NotWorthIt, "{state:?}");
+        let to_ac = Decision::Switch {
+            to: "AC".to_string(),
+            reason: Reason::WindowOpen,
+        };
+        assert_eq!(decide(&situation, &state), to_ac);
+
+        situation.cost = None;
+        let state = regime(&situation);
+        assert_eq!(state.why, RegimeWhy::NoCostYet);
+        assert_eq!(decide(&situation, &state), to_ac);
+
+        // While LB has no rates the fixed order names AC, whose slack is known.
+        let mut learning = situation;
+        learning.cost = Some(SwitchCost {
+            usd: 0.05,
+            samples: 3,
+        });
+        learning.inputs.accounts[2].rates = None;
+        let state = regime(&learning);
+        assert_eq!(state.why, RegimeWhy::Learning);
+        assert_eq!(decide(&learning, &state), to_ac);
+    }
+
+    #[test]
+    fn a_move_to_an_account_that_loses_quota_waits_for_the_dwell_and_the_hold() {
+        let mut situation = situation(inputs());
+        let state = regime(&situation);
+        assert!(!state.early, "{state:?}");
+        situation.inputs.last_switch_at = Some(now() - Duration::minutes(29));
+        assert_eq!(decide(&situation, &state), Decision::Stay);
+        situation.inputs.last_switch_at = None;
+        situation.inputs.manual_hold_until = Some(now() + Duration::hours(3));
+        assert_eq!(decide(&situation, &state), Decision::Stay);
+    }
+
+    #[test]
+    fn going_back_to_an_account_that_loses_quota_after_its_window_resets() {
+        // AC loses quota and filled its 5 h window; auto-burn moved to LB,
+        // whose slack (15.75 at 64 %) is above the cushion. The window ended five minutes
+        // ago. AC's slack is still below 0, so auto-burn goes back to AC, an
+        // hour after the switch to LB, though early switching is off.
+        let mut inputs = inputs();
+        inputs.active = Some("LB".to_string());
+        inputs.accounts[2].week_percent = 64.0;
+        inputs.accounts[1].session = Some(SessionState {
+            percent: 100.0,
+            resets_at: Some(now() - Duration::minutes(5)),
+        });
+        inputs.last_switch_at = Some(now() - Duration::hours(1));
+        let ac_slack = slack(&inputs.accounts[1], &inputs).expect("AC has rates");
+        assert!(ac_slack <= 0.0, "{ac_slack}");
+        let situation = situation(inputs);
+        let state = regime(&situation);
+        assert!(!state.early, "{state:?}");
         assert_eq!(
             decide(&situation, &state),
             Decision::Switch {
@@ -611,11 +710,12 @@ mod tests {
 
     #[test]
     fn an_account_auto_burn_may_not_use_is_never_a_target() {
+        // AC has the least slack, but auto-burn may not use it; LB's slack of
+        // -0.25 is within the cushion, so it is the target.
         let mut inputs = inputs();
         inputs.accounts[1].may_use = false;
         let situation = situation(inputs);
         let state = regime(&situation);
-        assert!(state.early);
         assert_eq!(
             decide(&situation, &state),
             Decision::Switch {

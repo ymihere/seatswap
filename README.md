@@ -132,8 +132,9 @@ a running Claude Code session follows has not been tried on a Mac.
   login is larger than one Credential Manager entry (2,560 bytes), so those copies are private files
   in seatswap's `secrets` folder; Codex switching works there too.
 - **Auto-burn.** Switched on, seatswap moves between accounts by itself so that as little work as
-  possible is blocked; it switches before an account is full only when the measured gain is worth
-  the switch. Switched off, it suggests the same switch instead. It measures work in API dollars:
+  possible is blocked and as little quota as possible expires: it moves to an account that is at
+  risk of losing quota at its weekly reset (8 working hours of slack or less), and switches before
+  an account is full for any other reason only when the measured gain is worth the switch. Switched off, it suggests the same switch instead. It measures work in API dollars:
   each account learns how many percent of a limit one dollar of work at API prices uses, starting
   from a figure assumed from its plan.
 - **Status line for Claude Code.** `seatswap statusline` prints the live account and its limits in

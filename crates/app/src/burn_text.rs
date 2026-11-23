@@ -173,8 +173,8 @@ pub fn why(why: RegimeWhy) -> &'static str {
         RegimeWhy::Learning => "learning",
         RegimeWhy::SessionsOff => "reading sessions is off: no rates are learned",
         RegimeWhy::NoCostYet => "no switch measured yet",
-        RegimeWhy::NotWorthIt => "switching before 100 % does not pay",
-        RegimeWhy::Pays => "switching before 100 % pays",
+        RegimeWhy::NotWorthIt => "switches early only for quota at risk of expiring",
+        RegimeWhy::Pays => "switches early whenever it pays",
     }
 }
 
@@ -204,6 +204,7 @@ pub fn segment_line(
 /// The name of a replay's policy: the words `seatswap burn simulate` prints.
 pub fn policy_name(policy: Policy) -> &'static str {
     match policy {
+        Policy::WhenFull => "Only when full",
         Policy::Lazy => "Lazy",
         Policy::Eager => "Eager",
     }
@@ -413,12 +414,12 @@ pub fn switch_notification(
 }
 
 /// The suggestion when auto-burn is off: "Switch to … now: …", plus what the
-/// plan that switches only at 100 % expects to leave unused on the target's
-/// week. The "Staying on …" sentence is about staying on the active account
-/// until the target is full, which only the lazy plan models, so this is the
-/// one place that plan is chosen: the plan auto-burn follows may be eager while
-/// early switching is on, and its `left_at_reset` would not answer that
-/// sentence.
+/// plan that switches only at 100 % ([`Policy::WhenFull`]) expects to leave
+/// unused on the target's week. The "Staying on …" sentence is about staying on
+/// the active account until it is full, which only that plan models, so this
+/// is the one place that plan is chosen: the plan auto-burn follows moves early
+/// to an account that would lose quota, and its `left_at_reset` would not
+/// answer that sentence.
 pub fn suggestion(
     decision: &Decision,
     inputs: &Inputs,
@@ -437,7 +438,7 @@ pub fn suggestion(
         "Switch to {to_name} now: {}.",
         reason(why, to, active, views, now, offset)?
     );
-    let plan = follow(inputs, Policy::Lazy);
+    let plan = follow(inputs, Policy::WhenFull);
     if let (Some(left), Some(active_name)) = (
         plan.left_at_reset.get(to),
         active.map(|id| abbr(views, id)).transpose()?,
@@ -590,9 +591,9 @@ mod tests {
         }
     }
 
-    /// The lazy plan stays on PR for 50 h, after AC's weekly reset at 24 h, so
-    /// AC is left untouched (100 % unused); the eager plan uses AC at once and
-    /// leaves nothing at that reset.
+    /// Switching only when full stays on PR for 50 h, after AC's weekly reset at
+    /// 24 h, so AC is left untouched (100 % unused); the eager plan uses AC at
+    /// once and leaves nothing at that reset.
     fn inputs_that_leave_the_target_unused() -> Inputs {
         Inputs {
             now: utc("2026-11-10T12:00:00Z"),
@@ -804,9 +805,9 @@ mod tests {
         assert_eq!(why(RegimeWhy::NoCostYet), "no switch measured yet");
         assert_eq!(
             why(RegimeWhy::NotWorthIt),
-            "switching before 100 % does not pay"
+            "switches early only for quota at risk of expiring"
         );
-        assert_eq!(why(RegimeWhy::Pays), "switching before 100 % pays");
+        assert_eq!(why(RegimeWhy::Pays), "switches early whenever it pays");
     }
 
     #[cfg(feature = "gui")]
@@ -874,16 +875,21 @@ mod tests {
     }
 
     #[test]
-    fn an_expiring_target_adds_the_lazy_plans_percent() {
+    fn an_expiring_target_adds_the_only_when_full_percent() {
         let views = vec![view("pr", "PR", 20.0, false), view("ac", "AC", 10.0, true)];
         let inputs = inputs_that_leave_the_target_unused();
         assert_eq!(
-            follow(&inputs, Policy::Lazy)
+            follow(&inputs, Policy::WhenFull)
                 .left_at_reset
                 .get("ac")
                 .copied(),
             Some(100.0),
-            "the lazy plan never uses AC before its reset"
+            "switching only when full never uses AC before its reset"
+        );
+        assert_ne!(
+            follow(&inputs, Policy::Lazy).left_at_reset.get("ac"),
+            Some(&100.0),
+            "the lazy plan moves to AC, which would lose quota"
         );
         let decision = Decision::Switch {
             to: "ac".to_string(),
@@ -902,7 +908,7 @@ mod tests {
     }
 
     #[test]
-    fn the_suggestion_uses_the_lazy_plan_even_when_the_assessment_is_eager() {
+    fn the_suggestion_uses_only_when_full_even_when_the_assessment_is_eager() {
         let views = vec![view("pr", "PR", 20.0, false), view("ac", "AC", 10.0, true)];
         let inputs = inputs_that_leave_the_target_unused();
         let early = early_regime();
@@ -914,8 +920,8 @@ mod tests {
         );
         assert_ne!(
             assessment.plan.left_at_reset.get("ac"),
-            follow(&inputs, Policy::Lazy).left_at_reset.get("ac"),
-            "the eager plan leaves AC used, the lazy plan leaves it untouched"
+            follow(&inputs, Policy::WhenFull).left_at_reset.get("ac"),
+            "the eager plan leaves AC used, only when full leaves it untouched"
         );
 
         let suggestion = suggestion(

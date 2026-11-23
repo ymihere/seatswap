@@ -520,7 +520,7 @@ function makeFixture() {
       on: true,
       pausedUntil: null,
       early: true,
-      why: "switching before 100 % pays",
+      why: "switches early whenever it pays",
       line: [
         { text: "On " },
         { account: acmeId, abbr: "AC" },
