@@ -2948,7 +2948,7 @@ mod tests {
     }
 
     /// Turning auto-burn on or off writes `AutoBurnSet`, not the pause/resume
-    /// event: a toggle must not end a manual switch's hold. The event a save
+    /// event: a toggle must not end an explicit pause. The event a save
     /// writes comes from `settings_change_events`, so this needs no
     /// `save_setting` (which applies `startAtLogin`).
     #[test]
@@ -3921,7 +3921,7 @@ mod tests {
                 active: None,
                 rhythm: seatswap_core::burn::Rhythm { usd: [0.0; 168] },
                 last_switch_at: None,
-                manual_hold_until: None,
+                paused_until: None,
             },
             Regime {
                 early: false,

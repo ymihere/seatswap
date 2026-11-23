@@ -3155,7 +3155,7 @@ mod tests {
             active: Some(tiny.accounts[0].id.clone()),
             rhythm: Rhythm { usd: [1.0; 168] },
             last_switch_at: None,
-            manual_hold_until: None,
+            paused_until: None,
         };
         let regime = Regime {
             early: false,
@@ -3359,7 +3359,7 @@ mod tests {
             active: Some(tiny.accounts[0].id.clone()),
             rhythm: Rhythm { usd: [1.0; 168] },
             last_switch_at: None,
-            manual_hold_until: None,
+            paused_until: None,
         };
 
         // A reading of this moment is a plan.
@@ -3432,7 +3432,7 @@ mod tests {
             active: Some(tiny.accounts[0].id.clone()),
             rhythm: Rhythm { usd: [1.0; 168] },
             last_switch_at: None,
-            manual_hold_until: None,
+            paused_until: None,
         };
 
         let oldest = now - Duration::hours(2);

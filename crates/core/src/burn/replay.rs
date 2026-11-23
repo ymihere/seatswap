@@ -151,7 +151,7 @@ pub fn replay_records(
         // A replay plays its range from the start, as auto-burn would have
         // from no switch and no hold.
         last_switch_at: None,
-        manual_hold_until: None,
+        paused_until: None,
     };
     inputs.check()?;
     let typical_usd = mean_over_hours(hours.values().copied());

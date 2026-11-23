@@ -6,6 +6,17 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.5.2] - 2026-11-23
+
+### Changed
+
+- A switch by hand no longer holds auto-burn back for 4 hours. Auto-burn stays on the account you
+  chose until it is full or another account is at risk of losing quota; once such an account's
+  5h window resets, it switches to it. To keep your choice, pause auto-burn. Settings → Auto-burn
+  no longer has the line "After a switch by you".
+- The shortest time between a switch and an early switch after it is 5 minutes instead of 30. It
+  only guards against a runaway; no planned switch comes sooner.
+
 ## [1.5.1] - 2026-11-23
 
 ### Fixed

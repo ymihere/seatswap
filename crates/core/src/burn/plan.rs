@@ -62,9 +62,9 @@ pub struct Inputs {
     /// within [`MIN_DWELL_MIN`] of it, in [`crate::burn::decide::decide`] and in
     /// the eager plan alike; `None` counts as long ago.
     pub last_switch_at: Option<DateTime<Utc>>,
-    /// The end of the hold a switch not made by auto-burn starts (spec §2.5):
-    /// no early move before it.
-    pub manual_hold_until: Option<DateTime<Utc>>,
+    /// The end of an explicit pause of auto-burn (spec §7.4.3): no early move
+    /// before it. A switch by hand starts none.
+    pub paused_until: Option<DateTime<Utc>>,
 }
 
 /// A value [`Inputs::check`] rejects, because no plan can be computed from it.
@@ -387,7 +387,7 @@ pub fn choose(inputs: &Inputs, at: DateTime<Utc>) -> Option<String> {
 /// Eager to any account [`choose`] names whose slack is at least
 /// [`SLACK_MARGIN_H`] × [`Rhythm::typical_hour`] below the current one's, each
 /// when [`early_move_allowed`] says yes: the plan starts from
-/// [`Inputs::last_switch_at`] and [`Inputs::manual_hold_until`], so its first
+/// [`Inputs::last_switch_at`] and [`Inputs::paused_until`], so its first
 /// early move is the one [`crate::burn::decide::decide`] will make.
 ///
 /// An account without rates is played with `c = 0` and `s = 0`: it never fills
@@ -482,7 +482,7 @@ pub(super) fn play(inputs: &Inputs, policy: Policy, walk: &Walk<'_>, typical: f6
                         policy,
                         typical,
                         last_switch,
-                        inputs.manual_hold_until,
+                        inputs.paused_until,
                         walk,
                     )
                     .or(Some(index))
@@ -832,15 +832,15 @@ fn pick(views: &[View<'_>], at: DateTime<Utc>, walk: &Walk<'_>, typical: f64) ->
 
 /// Whether an early move (S2) may come at `at` (spec §2.5): the last switch is
 /// at least [`MIN_DWELL_MIN`] before it (no known switch counts as long ago)
-/// and no manual hold runs past it. The one copy of the rule:
+/// and no pause runs past it. The one copy of the rule:
 /// [`crate::burn::decide::decide`] and the eager plan both use it.
 pub(super) fn early_move_allowed(
     last_switch: Option<DateTime<Utc>>,
-    manual_hold_until: Option<DateTime<Utc>>,
+    paused_until: Option<DateTime<Utc>>,
     at: DateTime<Utc>,
 ) -> bool {
     last_switch.is_none_or(|last| at - last >= Duration::minutes(MIN_DWELL_MIN))
-        && manual_hold_until.is_none_or(|until| until <= at)
+        && paused_until.is_none_or(|until| until <= at)
 }
 
 /// Whether an early move (S2) to a target with `target_slack` is due while the
@@ -875,7 +875,7 @@ fn early_move(
     policy: Policy,
     typical: f64,
     last_switch: Option<DateTime<Utc>>,
-    manual_hold_until: Option<DateTime<Utc>>,
+    paused_until: Option<DateTime<Utc>>,
     walk: &Walk<'_>,
 ) -> Option<usize> {
     let early = match policy {
@@ -883,7 +883,7 @@ fn early_move(
         Policy::Lazy => false,
         Policy::Eager => true,
     };
-    if !early_move_allowed(last_switch, manual_hold_until, at) {
+    if !early_move_allowed(last_switch, paused_until, at) {
         return None;
     }
     let target = pick(views, at, walk, typical)?;
@@ -1009,7 +1009,7 @@ pub(crate) mod testkit {
             active: Some("PR".to_string()),
             rhythm: week(15),
             last_switch_at: None,
-            manual_hold_until: None,
+            paused_until: None,
         }
     }
 
@@ -1140,7 +1140,7 @@ mod tests {
             active: None,
             rhythm: week(15),
             last_switch_at: None,
-            manual_hold_until: None,
+            paused_until: None,
         };
         let x1_slack = slack(&inputs.accounts[0], &inputs).expect("X1 has rates");
         let x2_slack = slack(&inputs.accounts[1], &inputs).expect("X2 has rates");
@@ -1170,7 +1170,7 @@ mod tests {
             active: None,
             rhythm: week(15),
             last_switch_at: None,
-            manual_hold_until: None,
+            paused_until: None,
         };
         let x1_slack = slack(&inputs.accounts[0], &inputs).expect("X1 has rates");
         let x2_slack = slack(&inputs.accounts[1], &inputs).expect("X2 has rates");
@@ -1196,7 +1196,7 @@ mod tests {
             active: None,
             rhythm: week(15),
             last_switch_at: None,
-            manual_hold_until: None,
+            paused_until: None,
         };
 
         let with_thinking = choose(&inputs, now());
@@ -1222,7 +1222,7 @@ mod tests {
             active: Some("Z".to_string()),
             rhythm: week(15),
             last_switch_at: None,
-            manual_hold_until: None,
+            paused_until: None,
         };
         let x1_slack = slack(&inputs.accounts[1], &inputs).expect("X1 has rates");
         let x2_slack = slack(&inputs.accounts[2], &inputs).expect("X2 has rates");
@@ -1301,18 +1301,19 @@ mod tests {
     }
 
     #[test]
-    fn lazy_respects_the_dwell_and_the_manual_hold() {
-        // AC loses quota, but a switch 10 minutes ago or a manual hold for the
-        // next hour keeps the lazy plan on PR until they end.
+    fn lazy_respects_the_dwell_and_a_pause() {
+        // AC loses quota, but a switch 2 minutes ago or a pause for the next
+        // hour keeps the lazy plan on PR until they end; the plan's steps are
+        // 15 minutes, so the dwell ends at the next step.
         let mut inputs = inputs();
-        inputs.last_switch_at = Some(now() - Duration::minutes(10));
+        inputs.last_switch_at = Some(now() - Duration::minutes(2));
         let plan = follow(&inputs, Policy::Lazy);
         assert_eq!(plan.segments[0].account.as_deref(), Some("PR"));
         assert_eq!(plan.segments[1].account.as_deref(), Some("AC"));
-        assert_eq!(plan.segments[1].from, now() + Duration::minutes(30));
+        assert_eq!(plan.segments[1].from, now() + Duration::minutes(15));
 
         let mut inputs = super::testkit::inputs();
-        inputs.manual_hold_until = Some(now() + Duration::hours(1));
+        inputs.paused_until = Some(now() + Duration::hours(1));
         let plan = follow(&inputs, Policy::Lazy);
         assert_eq!(plan.segments[0].account.as_deref(), Some("PR"));
         assert_eq!(plan.segments[1].account.as_deref(), Some("AC"));
@@ -1424,28 +1425,24 @@ mod tests {
     }
 
     #[test]
-    fn the_eager_plan_waits_out_the_last_switch_and_the_manual_hold() {
-        // Without a switch or a hold, the eager plan leaves PR for AC at once.
+    fn the_eager_plan_waits_out_the_last_switch_and_a_pause() {
+        // Without a switch or a pause, the eager plan leaves PR for AC at once.
         let mut inputs = inputs();
         assert_eq!(first_move(&inputs), ("AC".to_string(), now()));
 
-        // A switch 10 minutes ago: the first step at least 30 minutes after it
-        // (steps are 15 minutes) is now + 30 min, so the plan does not name
+        // A switch 2 minutes ago: the first step at least 5 minutes after it
+        // (steps are 15 minutes) is now + 15 min, so the plan does not name
         // "now" while decide stays for the dwell.
-        inputs.last_switch_at = Some(now() - Duration::minutes(10));
-        assert!(!early_move_allowed(
-            inputs.last_switch_at,
-            None,
-            now() + Duration::minutes(15)
-        ));
+        inputs.last_switch_at = Some(now() - Duration::minutes(2));
+        assert!(!early_move_allowed(inputs.last_switch_at, None, now()));
         assert_eq!(
             first_move(&inputs),
-            ("AC".to_string(), now() + Duration::minutes(30))
+            ("AC".to_string(), now() + Duration::minutes(15))
         );
 
-        // A manual hold for 2 hours: the first early move is at its end.
+        // A pause for 2 hours: the first early move is at its end.
         inputs.last_switch_at = Some(now() - Duration::hours(1));
-        inputs.manual_hold_until = Some(now() + Duration::hours(2));
+        inputs.paused_until = Some(now() + Duration::hours(2));
         assert_eq!(
             first_move(&inputs),
             ("AC".to_string(), now() + Duration::hours(2))
@@ -1463,43 +1460,9 @@ mod tests {
     }
 
     #[test]
-    fn eager_respects_the_dwell() {
-        let inputs = inputs();
-        let plan = follow(&inputs, Policy::Eager);
-        for pair in plan.segments.windows(2) {
-            let (before, after) = (&pair[0], &pair[1]);
-            let (Some(from), Some(to)) = (&before.account, &after.account) else {
-                continue;
-            };
-            if from == to {
-                continue;
-            }
-            let gap = after.from.signed_duration_since(before.from);
-            if gap < Duration::minutes(MIN_DWELL_MIN) {
-                // Allowed only where the account in use is not usable at the
-                // later start: being full somewhere later in the week is not
-                // the rule.
-                let index = inputs
-                    .accounts
-                    .iter()
-                    .position(|account| &account.id == from)
-                    .expect("the segment names an account");
-                assert!(
-                    !usable(&inputs.accounts[index], after.from),
-                    "{from} gave way after {gap:?} while still usable at {:?}",
-                    after.from
-                );
-            }
-        }
-        // The move itself waits for the dwell: 29 minutes is too soon.
-        assert_eq!(eager_target_after(29), None);
-        assert_eq!(eager_target_after(30), Some(1)); // AC
-    }
-
-    #[test]
     fn eager_move_waits_for_the_dwell() {
-        assert_eq!(eager_target_after(29), None);
-        assert_eq!(eager_target_after(30), Some(1)); // AC
+        assert_eq!(eager_target_after(MIN_DWELL_MIN - 1), None);
+        assert_eq!(eager_target_after(MIN_DWELL_MIN), Some(1)); // AC
     }
 
     #[test]

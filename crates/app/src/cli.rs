@@ -1858,7 +1858,7 @@ fn burn_status(
     status.paused_until = assessment
         .situation
         .inputs
-        .manual_hold_until
+        .paused_until
         .filter(|until| *until > now);
     status.next = assessment.next.clone();
 
@@ -4406,7 +4406,7 @@ pub(crate) mod tests {
             active: Some("pr".to_string()),
             rhythm: Rhythm { usd: [1.0; 168] },
             last_switch_at: None,
-            manual_hold_until: None,
+            paused_until: None,
         }
     }
 

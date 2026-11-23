@@ -515,7 +515,7 @@ no modes and no tuning settings: every threshold is a constant in the code (see 
   like one without rates: the fixed order is used instead, capped accounts with an open window
   first, then the others, each by the earlier weekly reset and then the account id.
 - **S2** needs another usable account whose slack is at least 2 typical working hours below the
-  active account's, at least 30 minutes since the last switch of any kind, and no manual hold.
+  active account's, at least 5 minutes since the last switch of any kind, and no pause (§7.4.3).
   When that account's slack is 8 typical working hours or less, it is at risk of losing quota at its
   weekly reset: slack counts only the usual working hours, and every hour the machines are off
   beyond them costs quota. So auto-burn switches to it whether early switching is on or not, also
@@ -562,9 +562,9 @@ Once an hour seatswap plans the next 7 days twice: the **lazy** plan stays on an
 is blocked and then takes the one with the least slack, and it moves earlier only to an account
 at risk of losing quota (S2 with a slack of 8 typical working hours or less); the **eager** plan also takes the usable
 account with the least slack when it has at least 2 typical working hours less slack. Both make
-at most one early move per 30 minutes. The eager plan starts from the real last switch and the manual hold or
-pause (§7.4.3): its first early move comes no sooner than 30 minutes after that switch and not
-before the hold ends, exactly when S2 may switch. So the pop-up, `burn-next.json` and the status
+at most one early move per 5 minutes. Both start from the real last switch and the pause
+(§7.4.3): the first early move comes no sooner than 5 minutes after that switch and not before the
+pause ends, exactly when S2 may switch. So the pop-up, `burn-next.json` and the status
 line never name a switch for "now" that auto-burn will not make yet. Early switching (S2) is on
 only when all of these hold:
 
@@ -647,12 +647,14 @@ With `readSessions` off there is no session count and S2 does not wait.
 #### 7.4.3 Working by hand
 
 - **Manual switch while auto-burn is on.** A switch auto-burn did not make — by a person
-  (`seatswap use`, `next` or the pop-up), the CLI, an agent, or Claude Code's `/login` — holds S2
-  back for 4 hours, or until the account switched to is blocked, whichever comes first. Blocked means what "Usable" (§7.2) means: the week or the 5h session at 100 % ends the hold from the history's record of it; a per-model limit at 100 % ends it only while it blocks the account when the hold is checked (the history does not know which models ran). The hold
-  ends for good at that first block and does not come back. S1 is not held back.
+  (`seatswap use`, `next` or the pop-up), the CLI, an agent, or Claude Code's `/login` — holds
+  nothing back (since 1.5.2): auto-burn stays on the account you chose until it is full or another
+  account is at risk of losing quota, and then switches as usual, at least 5 minutes after your
+  switch. While early switching pays it may also move to an account with clearly less slack. To
+  keep your choice, pause auto-burn.
 - **Pause.** "Pause 4h" in the pop-up writes an `autoBurn` event with `pausedUntil`; "Resume"
   writes one with no end. The pop-up shows `Auto-burn paused until 18:10 · Resume`. A pause holds
-  S2 like a manual switch; a resume also ends a manual hold. Turning `autoBurn` on or off in the
+  S2 back until it ends or is resumed; S1 still leaves a full account. Turning `autoBurn` on or off in the
   settings writes `autoBurnSet`, which is neither a pause nor a resume and leaves both alone.
 
 #### 7.4.4 Per account
@@ -832,8 +834,7 @@ thinking run.
 - `active`: the id of the live account, or null.
 - `suggestion`: `{toId, text}` or null. It is the same suggestion as §7.4.5, only while auto-burn
   is off and `suggestSwitches` is on.
-- `autoBurn`: `{on, pausedUntil}`, where `pausedUntil` is null when there is no pause or manual
-  hold.
+- `autoBurn`: `{on, pausedUntil}`, where `pausedUntil` is null when there is no pause.
 - `next`: the id auto-burn would switch to (the target of a switch or a waiting switch, otherwise
   the first account of the plan auto-burn follows other than the active one), or null.
 - `burnError`: a history or planner error as text, or null. When it is set, `next` is null and the

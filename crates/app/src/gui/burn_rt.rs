@@ -14,7 +14,7 @@ use seatswap_core::burn::decide::{Decision, Regime, RegimeWhy, Situation};
 use seatswap_core::burn::live::{self, Learned, Readiness};
 use seatswap_core::burn::plan::{follow, rates_known, Inputs, Plan, Policy};
 use seatswap_core::burn::{
-    FRESH_MIN, LEARN_RETRY_MIN, MANUAL_HOLD_H, STALE_ASK_SECS, SWITCH_RELEARN_MIN, SWITCH_RETRY_MIN,
+    FRESH_MIN, LEARN_RETRY_MIN, STALE_ASK_SECS, SWITCH_RELEARN_MIN, SWITCH_RETRY_MIN,
 };
 use seatswap_core::engine::{AccountView, PollReason};
 use seatswap_core::history::{AccountRef, By, EventKind, HistoryDir};
@@ -37,7 +37,7 @@ pub(crate) struct WaitingSwitch {
 }
 
 /// What the pop-up shows of auto-burn (spec §2.5).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BurnView {
     pub on: bool,
@@ -55,27 +55,6 @@ pub(crate) struct BurnView {
     /// What auto-burn has measured so far (spec §2.13); `None` while there is
     /// no situation to measure.
     pub measured: Option<Measured>,
-    /// How long a switch by hand holds auto-burn back, in hours (spec §2.5):
-    /// the page writes "it waits {n} hours" from it.
-    pub manual_hold_h: i64,
-}
-
-impl Default for BurnView {
-    fn default() -> Self {
-        BurnView {
-            on: false,
-            paused_until: None,
-            early: false,
-            why: String::new(),
-            line: None,
-            planned: BTreeMap::new(),
-            waiting: None,
-            suggestion: None,
-            unread: Vec::new(),
-            measured: None,
-            manual_hold_h: MANUAL_HOLD_H,
-        }
-    }
 }
 
 /// What the last regime was computed from, as the settings page shows it
@@ -396,7 +375,7 @@ impl BurnRuntime {
     ) -> Option<String> {
         let paused = situation
             .inputs
-            .manual_hold_until
+            .paused_until
             .is_some_and(|until| until > tick.now);
         let desired = if tick.settings.auto_burn && !paused {
             planned_next(decision, plan, next, tick.now)
@@ -581,10 +560,7 @@ impl BurnRuntime {
         };
         let mut view = BurnView {
             on: settings.auto_burn,
-            paused_until: situation
-                .inputs
-                .manual_hold_until
-                .filter(|until| *until > now),
+            paused_until: situation.inputs.paused_until.filter(|until| *until > now),
             early: regime.early,
             why: burn_text::why(regime.why).to_string(),
             line,
@@ -593,7 +569,6 @@ impl BurnRuntime {
             suggestion: None,
             unread: Vec::new(),
             measured: Some(measured(situation, regime)),
-            manual_hold_h: MANUAL_HOLD_H,
         };
 
         match &decision {
@@ -775,7 +750,6 @@ fn waiting_view(settings: &Settings) -> BurnView {
         suggestion: None,
         unread: Vec::new(),
         measured: None,
-        manual_hold_h: MANUAL_HOLD_H,
     }
 }
 
@@ -975,7 +949,7 @@ mod tests {
                 active: active.map(str::to_string),
                 rhythm: Rhythm { usd: [1.0; 168] },
                 last_switch_at: None,
-                manual_hold_until: None,
+                paused_until: None,
             },
             cost: Some(SwitchCost {
                 usd: 0.05,
@@ -1745,7 +1719,7 @@ mod tests {
     }
 
     #[test]
-    fn a_user_switch_starts_the_hold() {
+    fn a_user_switch_holds_nothing_back() {
         let now = utc("2026-11-10T12:00:00Z");
         let event = Hosted {
             host: "atlas".to_string(),
@@ -1771,7 +1745,8 @@ mod tests {
         ];
         let mut rates = BTreeMap::new();
         // PR fills its week fast and its 5 h windows are small; AC can work far
-        // longer, so without a hold the early rule would switch to PR.
+        // longer, so the early rule switches to PR although AC was chosen by
+        // hand an hour ago (since 1.5.2 a switch by hand holds nothing back).
         rates.insert(AccountRef::of(&accounts[0]), Rates::given(1.0, Some(100.0)));
         rates.insert(AccountRef::of(&accounts[1]), Rates::given(1.0, None));
         let learned = Learned {
@@ -1801,32 +1776,14 @@ mod tests {
         let Readiness::Ready(situation) = readiness else {
             panic!("every account has a reading");
         };
-        let (mut held, action, _engine) = runtime();
+        let (mut runtime, action, _engine) = runtime();
         let settings = Settings {
             auto_burn: true,
             ..Settings::default()
         };
         let report =
-            held.decision_report(&situation, &regime(true), &views, &settings, now, offset());
-        assert!(action.try_recv().is_err(), "a hold stays");
-        assert_eq!(
-            report.view.expect("a view").paused_until,
-            Some(now + Duration::hours(3))
-        );
-
-        // The same reading without the hold would switch to PR: the input
-        // above would therefore fail if the hold rule were missing.
-        let mut without_hold = situation;
-        without_hold.inputs.manual_hold_until = None;
-        let (mut fresh, action, _engine) = runtime();
-        fresh.decision_report(
-            &without_hold,
-            &regime(true),
-            &views,
-            &settings,
-            now,
-            offset(),
-        );
+            runtime.decision_report(&situation, &regime(true), &views, &settings, now, offset());
+        assert_eq!(report.view.expect("a view").paused_until, None);
         match action.try_recv().expect("a switch to PR") {
             ActionCommand::Switch { key, .. } => assert_eq!(key, "pr"),
             _ => panic!("not a switch"),

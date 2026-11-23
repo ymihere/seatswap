@@ -1626,9 +1626,8 @@ pub const RHYTHM_WEEKS: i64 = 4;        // the rhythm averages 4 weeks; the newe
 pub const RATES_DAYS: i64 = 14;         // rates are learned from this many days of samples
 pub const STEP_MIN: i64 = 15;           // the plan's step
 pub const HORIZON_H: i64 = 168;         // the plan's horizon
-pub const MIN_DWELL_MIN: i64 = 30;      // shortest time between two switches
+pub const MIN_DWELL_MIN: i64 = 5;       // shortest time before an early switch: a runaway guard
 pub const SLACK_MARGIN_H: f64 = 2.0;    // S2's margin, in typical working hours
-pub const MANUAL_HOLD_H: i64 = 4;       // a manual switch holds early switching this long
 pub const MIN_GAIN_H: f64 = 0.5;        // early switching must save at least this
 pub const GAIN_FACTOR: f64 = 2.0;       // and at least this many times its extra switches' cost
 pub const MIN_COST_SAMPLES: u32 = 3;    // a measured switch cost needs this many switches
@@ -1776,10 +1775,10 @@ are Anthropic's only. `Account::capacity()` reads
     pub model_blocked: bool, pub rates: Option<Rates>, pub thinking_held: u32 }
 #[derive(Clone)] pub struct Inputs { pub now: DateTime<Utc>, pub offset: FixedOffset,
     pub accounts: Vec<AccountState>, pub active: Option<String>, pub rhythm: Rhythm,
-    pub last_switch_at: Option<DateTime<Utc>>, pub manual_hold_until: Option<DateTime<Utc>> }
+    pub last_switch_at: Option<DateTime<Utc>>, pub paused_until: Option<DateTime<Utc>> }
 impl Inputs { pub fn check(&self) -> Result<(), PlanError>; }   // also LastSwitchAfterNow
 pub(super) fn early_move_allowed(last_switch: Option<DateTime<Utc>>,
-    manual_hold_until: Option<DateTime<Utc>>, at: DateTime<Utc>) -> bool; // decide and both plans
+    paused_until: Option<DateTime<Utc>>, at: DateTime<Utc>) -> bool; // decide and both plans
 pub(super) fn early_move_due(early: bool, target_slack: f64, current_slack: f64,
     typical: f64) -> bool; // decide and both plans
 pub enum PlanError { InvalidPercent{account,limit,percent}, SessionWithoutReset{account,percent},
@@ -1806,10 +1805,10 @@ pub(super) fn rhythm_walk(inputs: &Inputs) -> Walk<'_>; // the plan and `decide:
 usable, then calls `choose`. WhenFull ("only when full", for the Forecast and the suggestion's
 "Staying on …" sentence) makes no other move. Lazy and eager also move when `choose` names another
 usable account whose slack is at least `SLACK_MARGIN_H` × the typical hour below the current one's,
-`early_move_allowed` says yes (the last switch at least `MIN_DWELL_MIN` ago and no manual hold
+`early_move_allowed` says yes (the last switch at least `MIN_DWELL_MIN` ago and no pause
 running) and `early_move_due` says yes: eager always, lazy only when the target's slack is at most
 `EXPIRY_CUSHION_H` (8) × the typical hour, so it is at risk of losing quota at its reset. The walk starts from
-`Inputs::last_switch_at` and `Inputs::manual_hold_until`, so the plan's first early move is the one
+`Inputs::last_switch_at` and `Inputs::paused_until`, so the plan's first early move is the one
 `decide` will make; a replay passes `None` for both. An account without rates is played with `c = 0` and `s = 0`: it never fills
 and never causes an early move. An active account with `may_use` false stays until it is blocked.
 `choose` is the usable account with the least slack, ties by the earlier weekly reset and then id;
@@ -1844,7 +1843,7 @@ pub fn decide(situation: &Situation, regime: &Regime) -> Decision;
 
 `decide` in this order: a reading older than `FRESH_MIN` → `Stale`; the active account blocked or no
 active account → `choose` names a target → `Switch` (`NoneActive` when there was none, otherwise
-`ActiveFull`), else `AllFull`; `early_move_allowed` false (a manual hold in the future, or the last
+`ActiveFull`), else `AllFull`; `early_move_allowed` false (a pause that ends in the future, or the last
 switch less than `MIN_DWELL_MIN` ago) → `Stay`; an active account auto-burn may use, `choose` names
 another account with enough less slack, and early switching is on or that account's slack is at
 most `EXPIRY_CUSHION_H` × the typical hour (`early_move_due`) → `Switch` (`WindowOpen` when the target has a 5 h limit, else `ResetNear`), or `Wait` when
@@ -1937,10 +1936,8 @@ rhythm, the rates of `accounts` and the switch cost; `read_sessions` off means n
 and `sessions_off` is set. `situation` puts every account with a reading
 into `Inputs` (`may_use` = the account's `auto_burn`, `login_ok` = `loginState == "ok"`), and returns
 `Unread` when an account auto-burn may use, or the active one, has no reading and is not logged
-out. The manual hold
-is the latest of any non-auto switch's `MANUAL_HOLD_H` and an `autoBurn` pause; a resume clears the
-manual hold; a manual hold ends at the first block of the account switched to, from the history or
-the state now, and stays ended. `assess` takes its plan from `plan::followed`, so the pop-up,
+out. `paused_until` is the end of this host's latest `autoBurn` pause while it is still ahead; a
+resume clears it, and a switch by hand starts none. `assess` takes its plan from `plan::followed`, so the pop-up,
 `burn-next.json`, the status line and `status --json` follow the same plan the Forecast shows.
 `next_account` is the target of a
 `Switch`/`Wait`, otherwise the first account of the plan other than the active one.
@@ -2098,8 +2095,7 @@ pub(crate) struct WaitingSwitch { pub to: String, pub latest: DateTime<Utc>, pub
 pub(crate) struct BurnView { pub on: bool, pub paused_until: Option<DateTime<Utc>>,
     pub early: bool, pub why: String, pub line: Option<Vec<BurnPart>>,
     pub planned: BTreeMap<String, DateTime<Utc>>, pub waiting: Option<WaitingSwitch>,
-    pub suggestion: Option<SwitchSuggestion>, pub measured: Option<Measured>,
-    pub manual_hold_h: i64 } // burn::MANUAL_HOLD_H: the page's "it waits {n} hours"
+    pub suggestion: Option<SwitchSuggestion>, pub measured: Option<Measured> }
 pub(crate) struct BurnTick<'a> { pub app: &'a AppPaths, pub history: Option<&'a HistoryDir>,
     pub views: &'a [AccountView], pub accounts: &'a [Account], pub settings: &'a Settings,
     pub active: Option<&'a str>, pub now: DateTime<Utc>, pub offset: FixedOffset,

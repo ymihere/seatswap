@@ -587,7 +587,7 @@ mod tests {
             active: Some("pr".to_string()),
             rhythm: Rhythm { usd: [1.0; 168] },
             last_switch_at: None,
-            manual_hold_until: None,
+            paused_until: None,
         }
     }
 
@@ -605,7 +605,7 @@ mod tests {
             active: Some("pr".to_string()),
             rhythm: Rhythm { usd: [1.0; 168] },
             last_switch_at: None,
-            manual_hold_until: None,
+            paused_until: None,
         }
     }
 

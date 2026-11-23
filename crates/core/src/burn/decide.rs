@@ -172,7 +172,7 @@ pub fn regime(situation: &Situation) -> Regime {
 ///    a target → [`Decision::Switch`] with [`Reason::ActiveFull`] (or
 ///    [`Reason::NoneActive`] when there is no active account), else
 ///    [`Decision::AllFull`];
-/// 4. a manual hold in the future, or the last switch less than
+/// 4. a pause that ends in the future, or the last switch less than
 ///    [`MIN_DWELL_MIN`] ago ([`early_move_allowed`], the rule both plans
 ///    play) → [`Decision::Stay`];
 /// 5. [`choose`] names another account and [`early_move_due`] says yes: its
@@ -230,7 +230,7 @@ pub fn decide(situation: &Situation, regime: &Regime) -> Decision {
         };
     }
 
-    if !early_move_allowed(inputs.last_switch_at, inputs.manual_hold_until, now) {
+    if !early_move_allowed(inputs.last_switch_at, inputs.paused_until, now) {
         return Decision::Stay;
     }
 
@@ -368,9 +368,9 @@ mod tests {
             }
         );
 
-        // Neither a busy tied session nor a manual hold holds S1 back.
+        // Neither a busy tied session nor a pause holds S1 back.
         situation.tied_busy = 3;
-        situation.inputs.manual_hold_until = Some(now() + Duration::hours(3));
+        situation.inputs.paused_until = Some(now() + Duration::hours(3));
         let state = regime(&situation);
         assert_eq!(
             decide(&situation, &state),
@@ -557,13 +557,13 @@ mod tests {
     }
 
     #[test]
-    fn a_manual_switch_holds_for_four_hours() {
+    fn a_pause_holds_early_switches() {
         let mut situation = situation(inputs());
-        situation.inputs.manual_hold_until = Some(now() + Duration::hours(3));
+        situation.inputs.paused_until = Some(now() + Duration::hours(3));
         let state = regime(&situation);
         assert_eq!(decide(&situation, &state), Decision::Stay);
 
-        situation.inputs.manual_hold_until = Some(now() - Duration::minutes(1));
+        situation.inputs.paused_until = Some(now() - Duration::minutes(1));
         let state = regime(&situation);
         assert_eq!(
             decide(&situation, &state),
@@ -575,13 +575,13 @@ mod tests {
     }
 
     #[test]
-    fn a_recent_switch_holds_for_thirty_minutes() {
+    fn a_recent_switch_holds_for_five_minutes() {
         let mut situation = situation(inputs());
-        situation.inputs.last_switch_at = Some(now() - Duration::minutes(29));
+        situation.inputs.last_switch_at = Some(now() - Duration::minutes(4));
         let state = regime(&situation);
         assert_eq!(decide(&situation, &state), Decision::Stay);
 
-        situation.inputs.last_switch_at = Some(now() - Duration::minutes(30));
+        situation.inputs.last_switch_at = Some(now() - Duration::minutes(5));
         let state = regime(&situation);
         assert_eq!(
             decide(&situation, &state),
@@ -669,14 +669,14 @@ mod tests {
     }
 
     #[test]
-    fn a_move_to_an_account_that_loses_quota_waits_for_the_dwell_and_the_hold() {
+    fn a_move_to_an_account_that_loses_quota_waits_for_the_dwell_and_a_pause() {
         let mut situation = situation(inputs());
         let state = regime(&situation);
         assert!(!state.early, "{state:?}");
-        situation.inputs.last_switch_at = Some(now() - Duration::minutes(29));
+        situation.inputs.last_switch_at = Some(now() - Duration::minutes(4));
         assert_eq!(decide(&situation, &state), Decision::Stay);
         situation.inputs.last_switch_at = None;
-        situation.inputs.manual_hold_until = Some(now() + Duration::hours(3));
+        situation.inputs.paused_until = Some(now() + Duration::hours(3));
         assert_eq!(decide(&situation, &state), Decision::Stay);
     }
 
@@ -937,7 +937,7 @@ mod tests {
     #[test]
     fn a_manual_hold_that_ends_now_is_no_hold() {
         let mut situation = situation(inputs());
-        situation.inputs.manual_hold_until = Some(now());
+        situation.inputs.paused_until = Some(now());
         let state = regime(&situation);
         assert_eq!(
             decide(&situation, &state),
@@ -964,7 +964,7 @@ mod tests {
             active: Some("Z".to_string()),
             rhythm: week(15),
             last_switch_at: None,
-            manual_hold_until: None,
+            paused_until: None,
         };
         let situation = situation(inputs);
         let state = regime(&situation);
@@ -1006,7 +1006,7 @@ mod tests {
             active: Some("Z".to_string()),
             rhythm: week(15),
             last_switch_at: None,
-            manual_hold_until: None,
+            paused_until: None,
         };
         let situation = situation(inputs);
         let state = regime(&situation);
@@ -1040,7 +1040,7 @@ mod tests {
             active: Some("Z".to_string()),
             rhythm: week(15),
             last_switch_at: None,
-            manual_hold_until: None,
+            paused_until: None,
         };
         let z_slack = slack(&inputs.accounts[0], &inputs).expect("Z has rates");
         let x1_slack = slack(&inputs.accounts[1], &inputs).expect("X1 has rates");

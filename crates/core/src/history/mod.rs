@@ -389,8 +389,7 @@ pub enum EventKind {
         paused_until: Option<DateTime<Utc>>,
     },
     /// A settings save changed whether auto-burn is on. It is not a pause or a
-    /// resume: a toggle leaves a manual switch's hold and an explicit pause
-    /// alone (spec §2.5).
+    /// resume: a toggle leaves an explicit pause alone (spec §7.4.3).
     AutoBurnSet {
         on: bool,
     },

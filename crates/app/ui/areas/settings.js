@@ -3200,8 +3200,6 @@ function switchesNote(view) {
 
 function autoBurnCard() {
   const view = burn();
-  const holdH =
-    view && Number.isInteger(view.manualHoldH) ? view.manualHoldH : null;
   return panel(
     "Auto-burn",
     "switches accounts so that you are blocked as little as possible",
@@ -3233,15 +3231,6 @@ function autoBurnCard() {
           text: view && typeof view.why === "string" ? view.why : MISSING,
         }),
         switchesNote(view)
-      ),
-      setting(
-        "After a switch by you",
-        h("span", {
-          text:
-            holdH === null
-              ? "the hold after a switch by you is not known"
-              : `it waits ${holdH} hour${holdH === 1 ? "" : "s"}, or until that account is full`,
-        })
       ),
       setting(
         "While a session would lose its thinking",

@@ -531,7 +531,6 @@ function makeFixture() {
       planned: { [labId]: isoIn(2 * hour) },
       waiting: { to: privateId, latest: isoIn(40 * 60000), tiedBusy: 1 },
       suggestion: null,
-      manualHoldH: 4,
       measured: {
         windowPercentOfWeek: {
           [privateId]: 8.6,

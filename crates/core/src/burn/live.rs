@@ -10,7 +10,7 @@ use chrono::{DateTime, Duration, FixedOffset, TimeZone, Utc};
 use crate::api::Limit;
 use crate::engine::{AccountView, Blocker};
 use crate::history::{
-    AccountRef, By, Event, EventKind, HistoryDir, HistoryError, Hosted, Hosts, Range, Sample,
+    AccountRef, Event, EventKind, HistoryDir, HistoryError, Hosted, Hosts, Range, Sample,
     TokenRecord,
 };
 use crate::money::Prices;
@@ -18,9 +18,9 @@ use crate::store::{Account, LoginState};
 
 use super::cost::switch_cost;
 use super::decide::{decide, regime, Decision, Regime, Situation};
-use super::plan::{blocked, followed, AccountState, Inputs, Plan, PlanError, SessionState};
+use super::plan::{followed, AccountState, Inputs, Plan, PlanError, SessionState};
 use super::rates::{rates, rhythm, unpriced_models, unpriced_warning, RateAccount, Timeline};
-use super::{Rates, Rhythm, MANUAL_HOLD_H, RATES_DAYS, RHYTHM_WEEKS};
+use super::{Rates, Rhythm, RATES_DAYS, RHYTHM_WEEKS};
 
 /// Everything a decision is built from, read once: the rhythm, the accounts'
 /// rates, the measured switch cost, the read warnings (and one per Claude model
@@ -248,7 +248,7 @@ pub fn situation(
     };
 
     let last_switch_at = last_switch_at(learned, now);
-    let manual_hold_until = manual_hold_until(learned, accounts, &states, now);
+    let paused_until = paused_until(learned, now);
 
     let situation = Situation {
         inputs: Inputs {
@@ -258,7 +258,7 @@ pub fn situation(
             active: active.map(str::to_string),
             rhythm: learned.rhythm.clone(),
             last_switch_at,
-            manual_hold_until,
+            paused_until,
         },
         cost: learned.cost,
         tied_busy,
@@ -357,81 +357,23 @@ fn last_switch_at(learned: &Learned, now: DateTime<Utc>) -> Option<DateTime<Utc>
         .max()
 }
 
-/// The latest of a manual switch's [`MANUAL_HOLD_H`] hold and an `AutoBurn`
-/// pause, less the manual hold that ended because its account was blocked.
-/// Any switch auto-burn did not make starts the hold (`by` other than `Auto`).
-/// A hold ends at the first time its account is blocked after the switch — the
-/// history's [`EventKind::Blocked`] of that account whose kind
-/// `LimitKind::blocks_whole_account` names (the 5 h session or the week of all
-/// models; a per-model weekly limit at 100 % is not an account block, spec §7.2),
-/// or its state now when that is already past — and stays ended. A resume
-/// (`paused_until: None`) ends a
-/// manual hold that came before it. An `AutoBurnSet` (a settings toggle) is not
-/// a pause or a resume and changes neither.
-fn manual_hold_until(
-    learned: &Learned,
-    accounts: &[Account],
-    states: &[AccountState],
-    now: DateTime<Utc>,
-) -> Option<DateTime<Utc>> {
-    let mut manual: Option<(DateTime<Utc>, AccountRef)> = None;
+/// The end of an explicit pause of auto-burn (spec §7.4.3): the `paused_until`
+/// of this host's latest `AutoBurn` event, while it lies after `now`. A resume
+/// (`paused_until: None`) ends it. A switch by hand holds nothing back: an
+/// account that would lose quota is used at once, whoever switched last. An
+/// `AutoBurnSet` (a settings toggle) is not a pause or a resume and changes
+/// nothing.
+fn paused_until(learned: &Learned, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
     let mut paused: Option<DateTime<Utc>> = None;
     for hosted in &learned.events {
         if hosted.host != learned.host || hosted.record.t > now {
             continue;
         }
-        match &hosted.record.kind {
-            EventKind::Switch { to, by, .. } if *by != By::Auto => {
-                manual = Some((hosted.record.t, to.clone()));
-            }
-            EventKind::AutoBurn { paused_until, .. } => {
-                paused = *paused_until;
-                if paused_until.is_none() {
-                    manual = None;
-                }
-            }
-            _ => {}
+        if let EventKind::AutoBurn { paused_until, .. } = &hosted.record.kind {
+            paused = *paused_until;
         }
     }
-
-    let manual_until = manual.and_then(|(at, to)| {
-        let until = at + Duration::hours(MANUAL_HOLD_H);
-        if until <= now {
-            return None;
-        }
-        let id = accounts
-            .iter()
-            .find(|account| AccountRef::of(account) == to)
-            .map(|account| account.id.as_str());
-        let blocked_event = learned
-            .events
-            .iter()
-            .filter(|hosted| hosted.host == learned.host && hosted.record.t > at)
-            .filter(|hosted| hosted.record.t <= now)
-            .filter_map(|hosted| match &hosted.record.kind {
-                EventKind::Blocked { account, k, .. }
-                    if *account == to && k.blocks_whole_account() =>
-                {
-                    Some(hosted.record.t)
-                }
-                _ => None,
-            })
-            .min();
-        let blocked_now = id
-            .and_then(|id| states.iter().find(|state| state.id == id))
-            .is_some_and(|state| blocked(state, now))
-            .then_some(now);
-        let ended = match (blocked_event, blocked_now) {
-            (Some(event), Some(state)) => Some(event.min(state)),
-            (Some(event), None) => Some(event),
-            (None, Some(state)) => Some(state),
-            (None, None) => None,
-        };
-        let until = ended.map_or(until, |ended| until.min(ended));
-        (until > now).then_some(until)
-    });
-    let paused_until = paused.filter(|until| *until > now);
-    manual_until.max(paused_until)
+    paused.filter(|until| *until > now)
 }
 
 #[cfg(test)]
@@ -439,6 +381,8 @@ mod tests {
     use super::*;
 
     use chrono::FixedOffset;
+
+    use crate::history::By;
 
     use crate::api::{Limit, LimitKind, Severity, Usage};
     use crate::burn::decide::{Reason, RegimeWhy};
@@ -562,26 +506,6 @@ mod tests {
                     cwd: None,
                     sessions: None,
                     waited_secs: None,
-                },
-            },
-        }
-    }
-
-    fn blocked_event(
-        host: &str,
-        at: DateTime<Utc>,
-        account: AccountRef,
-        kind: LimitKind,
-        model: Option<&str>,
-    ) -> Hosted<Event> {
-        Hosted {
-            host: host.to_string(),
-            record: Event {
-                t: at,
-                kind: EventKind::Blocked {
-                    account,
-                    k: kind,
-                    m: model.map(str::to_string),
                 },
             },
         }
@@ -711,157 +635,6 @@ mod tests {
         assert_eq!(held("lb"), 6);
         assert_eq!(held("ac"), 3);
         assert_eq!(held("pr"), 0);
-    }
-
-    #[test]
-    fn a_manual_hold_ends_when_its_account_is_blocked() {
-        let now = utc("2026-11-10T12:00:00Z");
-        let pr = account("pr", "PR", PR_ACC, true);
-        let ac = account("ac", "AC", AC_ACC, true);
-        // AC was switched to by hand an hour ago and is now at 100 % of its week.
-        let event = switch_event(
-            "atlas",
-            now - Duration::hours(1),
-            AccountRef::of(&ac),
-            By::User,
-        );
-        let learned = learned("atlas", vec![event]);
-        let views = vec![
-            view("pr", "PR", 10.0, None, now - Duration::minutes(1)),
-            view("ac", "AC", 100.0, Some(10.0), now - Duration::minutes(1)),
-        ];
-        let situation = ready(&learned, &views, &[pr, ac], Some("ac"), now);
-        assert_eq!(
-            situation.inputs.manual_hold_until, None,
-            "the blocked account ends the hold early"
-        );
-        assert_eq!(
-            situation.inputs.last_switch_at,
-            Some(now - Duration::hours(1))
-        );
-    }
-
-    /// AC's per-model Sonnet week crosses 100 % while all work runs on Opus: the
-    /// account is not blocked, so a manual switch to AC keeps its hold (spec
-    /// §7.2, "Usable").
-    #[test]
-    fn a_per_model_weekly_block_keeps_the_manual_hold() {
-        let now = utc("2026-11-10T12:00:00Z");
-        let pr = account("pr", "PR", PR_ACC, true);
-        let ac = account("ac", "AC", AC_ACC, true);
-        let switch = switch_event(
-            "atlas",
-            now - Duration::hours(1),
-            AccountRef::of(&ac),
-            By::User,
-        );
-        let blocked = blocked_event(
-            "atlas",
-            now - Duration::minutes(30),
-            AccountRef::of(&ac),
-            LimitKind::WeeklyScoped,
-            Some("sonnet"),
-        );
-        let learned = learned("atlas", vec![switch, blocked]);
-        let views = vec![
-            view("pr", "PR", 10.0, None, now - Duration::minutes(1)),
-            view("ac", "AC", 10.0, Some(10.0), now - Duration::minutes(1)),
-        ];
-        let situation = ready(&learned, &views, &[pr, ac], Some("ac"), now);
-        assert_eq!(
-            situation.inputs.manual_hold_until,
-            Some(now + Duration::hours(3)),
-            "a per-model weekly limit is not an account block"
-        );
-    }
-
-    /// AC's 5 h session is full after the manual switch: that is an account
-    /// block, so the hold ends at the event.
-    #[test]
-    fn a_session_block_ends_the_manual_hold() {
-        let now = utc("2026-11-10T12:00:00Z");
-        let pr = account("pr", "PR", PR_ACC, true);
-        let ac = account("ac", "AC", AC_ACC, true);
-        let switch = switch_event(
-            "atlas",
-            now - Duration::hours(1),
-            AccountRef::of(&ac),
-            By::User,
-        );
-        let blocked = blocked_event(
-            "atlas",
-            now - Duration::minutes(30),
-            AccountRef::of(&ac),
-            LimitKind::Session,
-            None,
-        );
-        let learned = learned("atlas", vec![switch, blocked]);
-        let views = vec![
-            view("pr", "PR", 10.0, None, now - Duration::minutes(1)),
-            view("ac", "AC", 10.0, Some(10.0), now - Duration::minutes(1)),
-        ];
-        let situation = ready(&learned, &views, &[pr, ac], Some("ac"), now);
-        assert_eq!(
-            situation.inputs.manual_hold_until, None,
-            "a full session ends the hold"
-        );
-    }
-
-    #[test]
-    fn a_hold_ended_by_a_full_account_does_not_come_back() {
-        let now = utc("2026-11-10T12:00:00Z");
-        let pr = account("pr", "PR", PR_ACC, true);
-        let ac = account("ac", "AC", AC_ACC, true);
-        // AC was switched to by hand two hours ago, was blocked an hour ago,
-        // and its window has reset since: the old rule would start the hold
-        // again because AC is not blocked at this reading.
-        let switch = switch_event(
-            "atlas",
-            now - Duration::hours(2),
-            AccountRef::of(&ac),
-            By::User,
-        );
-        let blocked = blocked_event(
-            "atlas",
-            now - Duration::hours(1),
-            AccountRef::of(&ac),
-            LimitKind::WeeklyAll,
-            None,
-        );
-        let learned = learned("atlas", vec![switch, blocked]);
-        let views = vec![
-            view("pr", "PR", 10.0, None, now - Duration::minutes(1)),
-            view("ac", "AC", 10.0, Some(10.0), now - Duration::minutes(1)),
-        ];
-        let situation = ready(&learned, &views, &[pr, ac], Some("ac"), now);
-        assert_eq!(
-            situation.inputs.manual_hold_until, None,
-            "the hold ended at the blocked event and stays ended"
-        );
-    }
-
-    #[test]
-    fn an_external_switch_starts_the_hold() {
-        let now = utc("2026-11-10T12:00:00Z");
-        let pr = account("pr", "PR", PR_ACC, true);
-        let ac = account("ac", "AC", AC_ACC, true);
-        let switch = switch_event(
-            "atlas",
-            now - Duration::hours(1),
-            AccountRef::of(&ac),
-            By::External,
-        );
-        let learned = learned("atlas", vec![switch]);
-        let views = vec![
-            view("pr", "PR", 10.0, None, now - Duration::minutes(1)),
-            view("ac", "AC", 10.0, Some(10.0), now - Duration::minutes(1)),
-        ];
-        let situation = ready(&learned, &views, &[pr, ac], Some("ac"), now);
-        assert_eq!(
-            situation.inputs.manual_hold_until,
-            Some(now + Duration::hours(3)),
-            "a /login outside seatswap holds the early rule back"
-        );
     }
 
     #[test]
@@ -1085,29 +858,6 @@ mod tests {
     }
 
     #[test]
-    fn a_manual_hold_lasts_four_hours() {
-        let now = utc("2026-11-10T12:00:00Z");
-        let pr = account("pr", "PR", PR_ACC, true);
-        let ac = account("ac", "AC", AC_ACC, true);
-        let switch = switch_event(
-            "atlas",
-            now - Duration::hours(1),
-            AccountRef::of(&ac),
-            By::Cli,
-        );
-        let learned = learned("atlas", vec![switch]);
-        let views = vec![
-            view("pr", "PR", 10.0, None, now - Duration::minutes(1)),
-            view("ac", "AC", 10.0, Some(10.0), now - Duration::minutes(1)),
-        ];
-        let situation = ready(&learned, &views, &[pr, ac], Some("ac"), now);
-        assert_eq!(
-            situation.inputs.manual_hold_until,
-            Some(now + Duration::hours(3))
-        );
-    }
-
-    #[test]
     fn an_unread_account_auto_burn_may_not_use_is_left_out() {
         let now = utc("2026-11-10T12:00:00Z");
         let pr = account("pr", "PR", PR_ACC, true);
@@ -1211,98 +961,6 @@ mod tests {
     }
 
     #[test]
-    fn resume_ends_a_manual_hold() {
-        let now = utc("2026-11-10T12:00:00Z");
-        let pr = account("pr", "PR", PR_ACC, true);
-        let ac = account("ac", "AC", AC_ACC, true);
-        let switch = switch_event(
-            "atlas",
-            now - Duration::hours(1),
-            AccountRef::of(&ac),
-            By::User,
-        );
-        let resume = Hosted {
-            host: "atlas".to_string(),
-            record: Event {
-                t: now - Duration::minutes(30),
-                kind: EventKind::AutoBurn {
-                    on: true,
-                    paused_until: None,
-                },
-            },
-        };
-        let learned = learned("atlas", vec![switch, resume]);
-        let views = vec![
-            view("pr", "PR", 10.0, None, now - Duration::minutes(1)),
-            view("ac", "AC", 10.0, None, now - Duration::minutes(1)),
-        ];
-        let situation = ready(&learned, &views, &[pr, ac], Some("ac"), now);
-        assert_eq!(situation.inputs.manual_hold_until, None);
-    }
-
-    #[test]
-    fn a_toggle_does_not_end_a_manual_hold_or_a_pause() {
-        let now = utc("2026-11-10T12:00:00Z");
-        let pr = account("pr", "PR", PR_ACC, true);
-        let ac = account("ac", "AC", AC_ACC, true);
-        let views = vec![
-            view("pr", "PR", 10.0, None, now - Duration::minutes(1)),
-            view("ac", "AC", 10.0, None, now - Duration::minutes(1)),
-        ];
-        let switch = switch_event(
-            "atlas",
-            now - Duration::hours(1),
-            AccountRef::of(&ac),
-            By::User,
-        );
-        let toggle = Hosted {
-            host: "atlas".to_string(),
-            record: Event {
-                t: now - Duration::minutes(30),
-                kind: EventKind::AutoBurnSet { on: true },
-            },
-        };
-        let first_learned = learned("atlas", vec![switch, toggle]);
-        let situation = ready(
-            &first_learned,
-            &views,
-            &[pr.clone(), ac.clone()],
-            Some("ac"),
-            now,
-        );
-        assert_eq!(
-            situation.inputs.manual_hold_until,
-            Some(now + Duration::hours(3)),
-            "a settings toggle is not a resume of the manual switch's hold"
-        );
-
-        let pause = Hosted {
-            host: "atlas".to_string(),
-            record: Event {
-                t: now - Duration::minutes(45),
-                kind: EventKind::AutoBurn {
-                    on: true,
-                    paused_until: Some(now + Duration::hours(2)),
-                },
-            },
-        };
-        let toggle = Hosted {
-            host: "atlas".to_string(),
-            record: Event {
-                t: now - Duration::minutes(30),
-                kind: EventKind::AutoBurnSet { on: false },
-            },
-        };
-        let learned = learned("atlas", vec![pause, toggle]);
-        let situation = ready(&learned, &views, &[pr, ac], Some("ac"), now);
-        assert_eq!(
-            situation.inputs.manual_hold_until,
-            Some(now + Duration::hours(2)),
-            "a settings toggle is not a resume of the explicit pause"
-        );
-    }
-
-    #[test]
     fn next_account_is_the_decisions_target_then_the_plans() {
         let now = utc("2026-11-10T12:00:00Z");
         let pr = account("pr", "PR", PR_ACC, true);
@@ -1355,28 +1013,81 @@ mod tests {
         );
     }
 
+    /// A switch by hand, by the command line or outside seatswap holds nothing
+    /// back (since 1.5.2): an account at risk of losing quota is used at once.
     #[test]
-    fn paused_until_is_the_situations_hold() {
+    fn a_switch_by_hand_holds_nothing_back() {
         let now = utc("2026-11-10T12:00:00Z");
         let pr = account("pr", "PR", PR_ACC, true);
         let ac = account("ac", "AC", AC_ACC, true);
-        let switch = switch_event(
-            "atlas",
-            now - Duration::hours(1),
-            AccountRef::of(&ac),
-            By::Cli,
-        );
-        let learned = learned("atlas", vec![switch]);
         let views = vec![
             view("pr", "PR", 10.0, None, now - Duration::minutes(1)),
             view("ac", "AC", 10.0, Some(10.0), now - Duration::minutes(1)),
         ];
-        let situation = ready(&learned, &views, &[pr, ac], Some("ac"), now);
-        assert_eq!(
-            situation.inputs.manual_hold_until,
-            Some(now + Duration::hours(3)),
-            "a CLI switch one hour ago holds for four hours"
+        for by in [By::User, By::Cli, By::External] {
+            let switch = switch_event(
+                "atlas",
+                now - Duration::minutes(10),
+                AccountRef::of(&ac),
+                by,
+            );
+            let learned = learned("atlas", vec![switch]);
+            let situation = ready(&learned, &views, &[pr.clone(), ac.clone()], Some("ac"), now);
+            assert_eq!(situation.inputs.paused_until, None, "{by:?}");
+            assert_eq!(
+                situation.inputs.last_switch_at,
+                Some(now - Duration::minutes(10)),
+                "{by:?}"
+            );
+        }
+    }
+
+    /// An explicit pause holds until its end; a resume ends it, a settings
+    /// toggle does not.
+    #[test]
+    fn a_pause_holds_until_its_end_or_a_resume() {
+        let now = utc("2026-11-10T12:00:00Z");
+        let pr = account("pr", "PR", PR_ACC, true);
+        let ac = account("ac", "AC", AC_ACC, true);
+        let views = vec![
+            view("pr", "PR", 10.0, None, now - Duration::minutes(1)),
+            view("ac", "AC", 10.0, None, now - Duration::minutes(1)),
+        ];
+        let at = |minutes: i64, kind: EventKind| Hosted {
+            host: "atlas".to_string(),
+            record: Event {
+                t: now - Duration::minutes(minutes),
+                kind,
+            },
+        };
+        let pause = at(
+            45,
+            EventKind::AutoBurn {
+                on: true,
+                paused_until: Some(now + Duration::hours(2)),
+            },
         );
+        let toggle = at(30, EventKind::AutoBurnSet { on: false });
+        let resume = at(
+            20,
+            EventKind::AutoBurn {
+                on: true,
+                paused_until: None,
+            },
+        );
+        let accounts = [pr, ac];
+
+        let paused = learned("atlas", vec![pause.clone(), toggle.clone()]);
+        let situation = ready(&paused, &views, &accounts, Some("ac"), now);
+        assert_eq!(
+            situation.inputs.paused_until,
+            Some(now + Duration::hours(2)),
+            "a settings toggle is not a resume of the explicit pause"
+        );
+
+        let resumed = learned("atlas", vec![pause, toggle, resume]);
+        let situation = ready(&resumed, &views, &accounts, Some("ac"), now);
+        assert_eq!(situation.inputs.paused_until, None, "a resume ends it");
     }
 
     fn early_regime(early: bool) -> Regime {
