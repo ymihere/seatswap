@@ -314,11 +314,15 @@ builder edits.
   notification say what it would do, with a Switch button.
 - It never leaves the active account blocked while another one is usable; when the active account
   is blocked and every account is full, it says when the next one resets.
-- It switches before an account is full only after it has measured the accounts' rates and what a
-  switch costs, and only when that is expected to save at least 0.5 working hours and twice its
-  extra switches' cost.
-- A switch that would make busy sessions lose their earlier thinking waits for a quiet moment; a
-  manual switch holds early switching back for 4 hours, and Pause 4h suspends it.
+- It switches before an account is full to an account at risk of losing quota at its weekly reset:
+  one that needs nearly all the working hours left before that reset to use its quota up (8 typical
+  working hours or less to spare, since the machines may be off). It goes back to such an account
+  as soon as its 5 h window resets. Other early switches come only after it has measured the
+  accounts' rates and what a switch costs, and only when one is expected to save at least 0.5
+  working hours and twice its extra switches' cost.
+- A switch that would make busy sessions lose their earlier thinking waits for a quiet moment. A
+  switch by hand holds nothing back; to keep your choice, Pause 4h suspends early switching. An
+  early switch comes at least 5 minutes after the last switch.
 - Every account has "Auto-burn may use this account"; off, it is never a target. Each switch is
   written to the history with its reason.
 
