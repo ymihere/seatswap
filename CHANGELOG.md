@@ -4,7 +4,35 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.5.3] - 2026-11-23
+
+### Changed
+
+- Auto-burn leaves an account at 95 % of its 5h window when another account's window has room,
+  instead of waiting for 100 %. The window holds no quota of its own, so this costs nothing, and the
+  usage figure trails the real use by a few minutes: Claude Code could hit the wall while seatswap
+  still read 96 %. With no other window below 95 % auto-burn stays and the account works to 100 %;
+  the week still counts as full only at 100 %. The notification says "A1's 5h window is nearly
+  full; it resets at 17:00".
+- Auto-burn also sees quota at risk when several accounts reset close together. Each could have
+  room alone, but work goes to one at a time: two accounts that reset together and each need 20 of
+  the 37 working hours left lose 3 hours of quota between them. Auto-burn now adds up what the
+  accounts resetting by the same time need and switches early when their shared room is 8 typical
+  working hours or less.
+
+### Fixed
+
+- An unused Codex subscription no longer records a finished week and a finished 5h window at every
+  poll. Its reset time moves a few minutes later with each answer, and seatswap took each move for
+  a window that had ended. Statistics showed hundreds of fake weeks: on the Subscriptions page
+  thousands of euros "expired" on a ChatGPT subscription. The records already written are left out
+  when the history is read, and the statistics pages say how many.
+- Statistics → Subscriptions with a range whose only week still runs ("This week"): the headers say
+  "the windows of this week that have finished" instead of "the last 0 weeks".
+- Statistics → Subscriptions no longer calls a plan "steady" from too few weeks. Telling a change
+  needs 10 weeks; with fewer, "Over the weeks" shows "—" and the 1 % chart says "Too few weeks to
+  tell a change: 7 of the 10 it needs."
+- The plan name in a "Plan sizes" line ("Team Premium") is no longer cut off.
 
 ## [1.5.2] - 2026-11-23
 
@@ -712,7 +740,10 @@ All notable changes to this project are documented here. The format follows
   starts later): it says so and shows the icon as soon as a tray appears; `seatswap panel` opens
   the pop-up meanwhile.
 
-[Unreleased]: https://github.com/ymihere/seatswap/compare/v1.5.0...HEAD
+[Unreleased]: https://github.com/ymihere/seatswap/compare/v1.5.3...HEAD
+[1.5.3]: https://github.com/ymihere/seatswap/compare/v1.5.2...v1.5.3
+[1.5.2]: https://github.com/ymihere/seatswap/compare/v1.5.1...v1.5.2
+[1.5.1]: https://github.com/ymihere/seatswap/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/ymihere/seatswap/compare/v1.4.5...v1.5.0
 [1.4.5]: https://github.com/ymihere/seatswap/compare/v1.4.4...v1.4.5
 [1.4.4]: https://github.com/ymihere/seatswap/compare/v1.4.3...v1.4.4

@@ -753,7 +753,8 @@ pub fn sample_of(account: &AccountRef, usage: &Usage, at: DateTime<Utc>, src: So
 
 /// The windows of `prev` that have ended by `next` at their reset time. A limit
 /// (matched by `k` and `m`) has ended when `prev.r` is `Some(end)` and:
-/// `next.t >= end`, or next has the limit with `next.r > end + 60 s`, or next
+/// `next.t >= end`, or next has the limit with `next.r > end + 60 s` and at
+/// least one window length (7 d, 5 h; less 60 s) after `end`, or next
 /// has the limit at least [`RESET_DROP_POINTS`] lower within [`RESET_JITTER`]
 /// of `end` (the reset seen a moment early by this computer's clock). A limit
 /// missing from `next`, or with `r` None, ends nothing by itself. A drop that
@@ -780,10 +781,19 @@ fn closed_windows_against(
     for limit in &prev.l {
         let Some(end) = limit.r else { continue };
         let current = find_limit(next, limit);
+        // A later reset is the next window only when it lies a whole window
+        // length after the old one (less the jitter): the old window ended at
+        // its reset and a new one began. An unused Codex limit names a reset
+        // one window length after every reading, so its reset moves later by
+        // minutes at each poll while the window goes on. A kind of unknown
+        // length has no such bound: any later reset is the next window.
+        let rollover = window_length(&limit.k).unwrap_or_else(Duration::zero);
         let same_later = current
             .and_then(|current| current.r)
-            .map(|new_end| new_end > end + Duration::seconds(RESET_JITTER))
-            .unwrap_or(false);
+            .is_some_and(|new_end| {
+                new_end > end + Duration::seconds(RESET_JITTER)
+                    && new_end >= end + rollover - Duration::seconds(RESET_JITTER)
+            });
         let before = poll
             .filter(|poll| poll.k == limit.k && poll.m == limit.m)
             .unwrap_or(limit);
@@ -1594,6 +1604,98 @@ mod tests {
             line_count(&dir.path().join("atlas/ollama-2026-11.jsonl")),
             1
         );
+    }
+
+    #[test]
+    fn a_reset_that_moves_later_by_minutes_is_the_same_window() {
+        let prev = sample(
+            utc("2026-11-16T09:08:21Z"),
+            vec![limit_sample(
+                LimitKind::WeeklyAll,
+                None,
+                0.0,
+                Some(utc("2026-11-23T09:09:00Z")),
+            )],
+        );
+        let moved = sample(
+            utc("2026-11-16T09:13:21Z"),
+            vec![limit_sample(
+                LimitKind::WeeklyAll,
+                None,
+                0.0,
+                Some(utc("2026-11-23T09:14:00Z")),
+            )],
+        );
+        assert!(closed_windows(&prev, &moved, None).is_empty());
+
+        // A whole week later is the next window, also when this computer's
+        // clock is behind and the reading still lies before the old reset.
+        let next_week = sample(
+            utc("2026-11-23T09:08:00Z"),
+            vec![limit_sample(
+                LimitKind::WeeklyAll,
+                None,
+                0.0,
+                Some(utc("2026-11-30T09:09:00Z")),
+            )],
+        );
+        let windows = closed_windows(&prev, &next_week, None);
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0].end, utc("2026-11-23T09:09:00Z"));
+    }
+
+    #[test]
+    fn an_unused_limit_whose_reset_moves_with_each_reading_writes_one_window() {
+        let dir = tempdir().unwrap();
+        let mut recorder = Recorder::new(history(dir.path()));
+        let session = |percent: f64, resets_at: Option<DateTime<Utc>>| Usage {
+            limits: vec![limit(LimitKind::Session, percent, resets_at)],
+            extra_usage_enabled: false,
+            warnings: Vec::new(),
+        };
+        // Unused, the limit names a reset five hours after every reading.
+        let start = utc("2026-11-16T09:08:21Z");
+        for poll in 0..12 {
+            let at = start + Duration::minutes(5 * poll);
+            recorder
+                .reading(
+                    &atlas_account(),
+                    None,
+                    &session(0.0, Some(at + Duration::hours(5))),
+                    at,
+                    Source::Poll,
+                )
+                .unwrap();
+        }
+        assert_eq!(window_lines(dir.path()), 0);
+
+        // Used, its reset stays; the window ends there, once.
+        let used_at = start + Duration::hours(1);
+        let reset = utc("2026-11-16T15:09:00Z");
+        for at in [used_at, used_at + Duration::minutes(5)] {
+            recorder
+                .reading(
+                    &atlas_account(),
+                    None,
+                    &session(40.0, Some(reset)),
+                    at,
+                    Source::Poll,
+                )
+                .unwrap();
+        }
+        recorder
+            .reading(
+                &atlas_account(),
+                None,
+                &session(0.0, None),
+                reset + Duration::minutes(1),
+                Source::Poll,
+            )
+            .unwrap();
+        let windows = windows_of(dir.path());
+        assert_eq!(windows.len(), 1, "{windows:?}");
+        assert_eq!(windows[0].end, reset);
+        assert_eq!(windows[0].final_percent, 40.0);
     }
 
     #[test]

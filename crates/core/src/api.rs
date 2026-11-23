@@ -729,7 +729,15 @@ impl Limit {
     /// at or before `now`; a week is played from 0 % after its reset by the
     /// callers, so only the session's own end matters here.
     pub fn is_full_at(&self, now: DateTime<Utc>) -> bool {
-        if self.percent < 100.0 {
+        self.reaches_at(100.0, now)
+    }
+
+    /// Whether this limit is at `percent` or more at `now` and its window is
+    /// not over: [`Limit::is_full_at`] with another threshold. Auto-burn's
+    /// leave rule (spec §7.4, S1) asks it with
+    /// [`crate::burn::WINDOW_LEAVE_PERCENT`].
+    pub fn reaches_at(&self, percent: f64, now: DateTime<Utc>) -> bool {
+        if self.percent < percent {
             return false;
         }
         !(self.kind == LimitKind::Session && self.resets_at.is_some_and(|reset| reset <= now))

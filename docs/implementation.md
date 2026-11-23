@@ -503,7 +503,10 @@ pub enum LoadLevel { Fine, Close, Critical, Locked }
 impl Limit {
     /// Whether this limit blocks at `now` (spec §2.7, §7.2): at 100 % or more and, for a session
     /// limit, its reset is after `now`. A week is read as 0 % after its reset by the callers.
-    pub fn is_full_at(&self, now: DateTime<Utc>) -> bool;
+    pub fn is_full_at(&self, now: DateTime<Utc>) -> bool;   // reaches_at(100.0, now)
+    /// At `percent` or more and, for a session limit, its reset is after `now`: auto-burn's leave
+    /// rule asks it with WINDOW_LEAVE_PERCENT.
+    pub fn reaches_at(&self, percent: f64, now: DateTime<Utc>) -> bool;
     pub fn level(&self) -> LoadLevel;
 }
 impl LoadLevel { pub fn color(&self) -> &'static str; } // "#22c55e" "#f59e0b" "#ef4444" "#ef4444"
@@ -956,7 +959,10 @@ impl Recorder {
 }
 pub fn sample_of(account: &AccountRef, usage: &Usage, at: DateTime<Utc>, src: Source) -> Sample;
 /// A limit (matched by k and m) has ended when prev.r is Some(end) and next.t >= end, or next has
-/// the limit with next.r > end + RESET_JITTER. A limit missing from next, or with r None, ends nothing.
+/// the limit with next.r > end + RESET_JITTER and next.r >= end + the kind's window length
+/// - RESET_JITTER (7 d, 5 h; any later reset for a kind of unknown length): a reset that moves
+/// later by less, as an unused Codex limit's does at every poll, is the same window going on.
+/// A limit missing from next, or with r None, ends nothing.
 /// end = prev.r, final = prev.p, lastSample = prev.t, uncertain = end - prev.t > 1 h;
 /// start = end - 7 d for weekly kinds, end - 5 h for session, None otherwise;
 /// lost = max(0, 100 - final) for weekly kinds, None otherwise. The drop at the reset time is
@@ -1627,6 +1633,7 @@ pub const RATES_DAYS: i64 = 14;         // rates are learned from this many days
 pub const STEP_MIN: i64 = 15;           // the plan's step
 pub const HORIZON_H: i64 = 168;         // the plan's horizon
 pub const MIN_DWELL_MIN: i64 = 5;       // shortest time before an early switch: a runaway guard
+pub const WINDOW_LEAVE_PERCENT: f64 = 95.0; // S1 leaves a 5 h window from here for one with room
 pub const SLACK_MARGIN_H: f64 = 2.0;    // S2's margin, in typical working hours
 pub const MIN_GAIN_H: f64 = 0.5;        // early switching must save at least this
 pub const GAIN_FACTOR: f64 = 2.0;       // and at least this many times its extra switches' cost
@@ -1779,15 +1786,17 @@ are Anthropic's only. `Account::capacity()` reads
 impl Inputs { pub fn check(&self) -> Result<(), PlanError>; }   // also LastSwitchAfterNow
 pub(super) fn early_move_allowed(last_switch: Option<DateTime<Utc>>,
     paused_until: Option<DateTime<Utc>>, at: DateTime<Utc>) -> bool; // decide and both plans
-pub(super) fn early_move_due(early: bool, target_slack: f64, current_slack: f64,
-    typical: f64) -> bool; // decide and both plans
+pub(super) fn early_move_due(early: bool, target_slack: f64, target_shared: f64,
+    current_slack: f64, typical: f64) -> bool; // decide and both plans
 pub enum PlanError { InvalidPercent{account,limit,percent}, SessionWithoutReset{account,percent},
     UnknownActive{id}, DuplicateAccount{id}, LastSwitchAfterNow{at,now}, OldestReadingAfterNow{at,now} }
 pub fn blocked(account: &AccountState, at: DateTime<Utc>) -> bool;
 pub fn usable(account: &AccountState, at: DateTime<Utc>) -> bool;       // may_use && !blocked
 pub fn usable_again(account: &AccountState, at: DateTime<Utc>) -> Option<DateTime<Utc>>;
+pub fn leave_due(inputs: &Inputs, index: usize) -> bool; // S1: blocked, or the window nearly full
 pub fn rates_known(account: &AccountState) -> bool;               // c known; s may be missing
 pub fn slack(account: &AccountState, inputs: &Inputs) -> Option<f64>;
+pub fn shared_slack(account: &AccountState, inputs: &Inputs) -> Option<f64>; // ≤ slack
 pub fn choose(inputs: &Inputs, at: DateTime<Utc>) -> Option<String>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)] pub enum Policy { WhenFull, Lazy, Eager }
 #[derive(Debug, Clone, PartialEq, Eq)] pub struct Segment { pub account: Option<String>,
@@ -1801,16 +1810,28 @@ pub fn followed(inputs: &Inputs, regime: &Regime) -> Plan; // eager while `regim
 pub(super) fn rhythm_walk(inputs: &Inputs) -> Walk<'_>; // the plan and `decide::latest_reaching`
 ```
 
-`follow` plays 168 h in 15-minute steps. Every policy leaves the current account when it is not
-usable, then calls `choose`. WhenFull ("only when full", for the Forecast and the suggestion's
+`follow` plays 168 h in 15-minute steps. Every policy leaves the current account when `leave_due`
+says so, then calls `choose`. `leave_due` (one copy, `leave_due_of` on the plan's views; `decide`
+uses it too) is true when the account is blocked, or when its 5 h window is at
+`WINDOW_LEAVE_PERCENT` (95) or more and not over (`View::window_nearly_full`, through
+`Limit::reaches_at`), another account is `View::roomy` (usable, window below 95 %) and
+`early_move_allowed` says yes. `pick` keeps only the roomy accounts when there is one, so `choose`
+passes over a nearly full window; with none it takes every usable account as before. WhenFull ("only when full", for the Forecast and the suggestion's
 "Staying on …" sentence) makes no other move. Lazy and eager also move when `choose` names another
 usable account whose slack is at least `SLACK_MARGIN_H` × the typical hour below the current one's,
 `early_move_allowed` says yes (the last switch at least `MIN_DWELL_MIN` ago and no pause
-running) and `early_move_due` says yes: eager always, lazy only when the target's slack is at most
-`EXPIRY_CUSHION_H` (8) × the typical hour, so it is at risk of losing quota at its reset. The walk starts from
+running) and `early_move_due` says yes: eager always, lazy only when the target's shared slack is at
+most `EXPIRY_CUSHION_H` (8) × the typical hour, so it is at risk of losing quota at its reset, alone
+or with the accounts that reset before it. `shared_slack` (one copy, `shared_slack_of` on the
+plan's views) is, for each weekly reset at or after the account's own, the walk's work until that
+reset capped by what the accounts resetting by then can take (`View::room`), minus what they need
+to be emptied; the least of these and the account's own slack. It counts the accounts that
+`View::shares_work`: auto-burn may use them, login live, no per-model block, week below 100 %, and
+known rates. The margin compares the accounts' own slacks, so two accounts at risk together never
+take turns. The walk starts from
 `Inputs::last_switch_at` and `Inputs::paused_until`, so the plan's first early move is the one
 `decide` will make; a replay passes `None` for both. An account without rates is played with `c = 0` and `s = 0`: it never fills
-and never causes an early move. An active account with `may_use` false stays until it is blocked.
+and never causes an early move. An active account with `may_use` false stays until `leave_due`.
 `choose` is the usable account with the least slack, ties by the earlier weekly reset and then id;
 when any usable account has no rates it uses the fixed order instead (capped accounts with an open
 window first, then the rest, each by earlier reset and id). When every usable account has a slack,
@@ -1833,7 +1854,9 @@ impl Situation { pub fn check(&self) -> Result<(), PlanError>; }
     pub lazy_blocked_h: f64, pub eager_blocked_h: f64, pub extra_switches: u32, pub cost_h: Option<f64> }
 pub fn regime(situation: &Situation) -> Regime;
 #[derive(Debug, Clone, PartialEq, Eq)] pub enum Reason { NoneActive,
-    ActiveFull { until: Option<DateTime<Utc>> }, WindowOpen, ResetNear }
+    ActiveFull { until: Option<DateTime<Utc>> },
+    WindowNearlyFull { until: Option<DateTime<Utc>> },  // the active account's window end
+    WindowOpen, ResetNear }
 #[derive(Debug, Clone, PartialEq, Eq)] pub enum Decision { Stay, Stale,
     Switch { to: String, reason: Reason },
     Wait { to: String, latest: DateTime<Utc>, tied_busy: u32, reason: Reason },
@@ -1843,12 +1866,15 @@ pub fn decide(situation: &Situation, regime: &Regime) -> Decision;
 
 `decide` in this order: a reading older than `FRESH_MIN` → `Stale`; the active account blocked or no
 active account → `choose` names a target → `Switch` (`NoneActive` when there was none, otherwise
-`ActiveFull`), else `AllFull`; `early_move_allowed` false (a pause that ends in the future, or the last
+`ActiveFull`), else `AllFull`; `leave_due` on the active account (its window nearly full, another
+roomy account, no pause, the dwell over) → `Switch` to `choose`'s account with `WindowNearlyFull`,
+never `Wait` and never `AllFull`; `early_move_allowed` false (a pause that ends in the future, or the last
 switch less than `MIN_DWELL_MIN` ago) → `Stay`; an active account auto-burn may use, `choose` names
-another account with enough less slack, and early switching is on or that account's slack is at
-most `EXPIRY_CUSHION_H` × the typical hour (`early_move_due`) → `Switch` (`WindowOpen` when the target has a 5 h limit, else `ResetNear`), or `Wait` when
-a thinking-tied session is busy and the target still has slack; otherwise `Stay`. A target slack of
-0 or less switches at once. `regime.early` is `why == Pays`; it needs rates for every account
+another account with enough less slack, and early switching is on or that account's shared slack is
+at most `EXPIRY_CUSHION_H` × the typical hour (`early_move_due`) → `Switch` (`WindowOpen` when the
+target has a 5 h limit, else `ResetNear`), or `Wait` until the work reaches the target's shared
+slack when a thinking-tied session is busy; otherwise `Stay`. A target shared slack of 0 or less
+switches at once. `regime.early` is `why == Pays`; it needs rates for every account
 auto-burn may use, a typical hour, at least `MIN_COST_SAMPLES`, and both gain rules of
 `docs/spec.md` §7.4.1. When no rates were learned because `readSessions` is off, `why` is
 `SessionsOff`, not `Learning`; the fact travels in `Situation.sessions_off`. `latest_reaching`
@@ -2082,7 +2108,7 @@ Every text is here; the tray app and the CLI do not keep a second copy. Missing 
 `Save an account to start.` without a stored account, else `No account auto-burn may use has a working login.` `why(SessionsOff)` is
 `reading sessions is off: no rates are learned`. `suggestion` returns `Some` only for `Switch`
 and `Wait`, and chooses the plan for its "Staying on … is expected to let … expire" sentence
-itself: `follow(inputs, Policy::WhenFull)`, the plan that switches only at 100 %, never the plan
+itself: `follow(inputs, Policy::WhenFull)`, the plan that switches only when full (`leave_due`), never the plan
 auto-burn follows (which moves early to an account at risk of losing quota). It adds that sentence only when
 that plan leaves more than 1 % of the target's week at its reset.
 
@@ -2846,7 +2872,10 @@ impl HistoryDir {
     /// one when the ordinary end is the reset's start + 7 days and the ordinary began before the
     /// reset's end. The reset record wins; otherwise the record with the latest `lastSample`
     /// counts, a tie goes to the host name that sorts first, so read order does not decide.
-    /// Sorted by end, then account.
+    /// Sorted by end, then account. An ordinary record whose next window of the same account,
+    /// kind and model ends more than RESET_JITTER later but was read more than RESET_JITTER
+    /// before its end went on and is left out (1.5.2 wrote one per poll for an unused Codex
+    /// limit); their count is one warning of the read. `keep_warnings` adds each warning once.
     pub fn finished_windows(&self, range: &Range, hosts: &Hosts)
         -> Result<Read<WindowRecord>, HistoryError>;
     /// Copy every file of `from`'s host folders that is missing here or longer there; keep a
@@ -3744,7 +3773,12 @@ pub struct PlanRow { pub id: String, pub company: Company, pub plan: Option<Stri
     /// API dollars over the company's WorkedHour (1.4.1). None with `missing`, or without a
     /// worked hour; both or neither.
     pub full_hours: Option<f64>, pub full_tokens: Option<f64>,
-    pub trend: Option<Change>, pub basis_hours: Option<f64>,  // basis_usd in worked hours
+    pub trend: Option<Change>,
+    /// too_few_for_change: "too few weeks to tell a change: 7 of the 10 it needs" (Ollama:
+    /// months) while the points are fewer than POINTS_BEFORE_CHANGE + 2; the page shows "—"
+    /// with it instead of "steady". PerPercent carries the same as `change_missing`.
+    pub trend_missing: Option<String>,
+    pub basis_hours: Option<f64>,  // basis_usd in worked hours
     pub thin: bool,
     /// Why the row has no figures, no basis and no cells; None when it has them.
     pub missing: Option<String> }

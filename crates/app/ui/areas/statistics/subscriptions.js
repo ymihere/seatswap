@@ -284,7 +284,7 @@ function totalsCard(totals, currency, env) {
   card.appendChild(h("span", { class: "sp" }));
   const weeksNode = h("span", {
     class: "xs mf",
-    text: `from the last ${weeks} week${weeks === 1 ? "" : "s"}`,
+    text: `from ${rangeWeeksText(weeks)}`,
   });
   for (const entry of partial) {
     requireObject(entry, "an entry of totals.partial");
@@ -301,6 +301,13 @@ function totalsCard(totals, currency, env) {
 // ---------------------------------------------------------------------------
 // card 1: what does each plan give me?
 // ---------------------------------------------------------------------------
+
+// The finished calendar weeks a figure covers: "the last 3 weeks", or, in a
+// range whose only week still runs, the windows of it that have finished.
+function rangeWeeksText(weeks) {
+  if (weeks === 0) return "the windows of this week that have finished";
+  return `the last ${weeks} week${weeks === 1 ? "" : "s"}`;
+}
 
 function trendNode(change) {
   requireObject(change, "a change");
@@ -390,11 +397,15 @@ function planRowNode(row, env, unmeasured) {
       })
     );
   } else {
-    line.appendChild(
-      row.trend === null || row.trend === undefined
-        ? h("span", { class: "mf", text: "steady" })
-        : trendNode(row.trend)
-    );
+    // Too few points tell no change, so such a line is not called steady.
+    const trendMissing = optionalString(row.trendMissing, "a plan row's trendMissing");
+    if (row.trend !== null && row.trend !== undefined) {
+      line.appendChild(trendNode(row.trend));
+    } else if (trendMissing !== null) {
+      line.appendChild(h("span", { class: "mf", text: "—", title: trendMissing }));
+    } else {
+      line.appendChild(h("span", { class: "mf", text: "steady" }));
+    }
   }
 
   const basisNode = h("span", { class: "n stats-sub-basis" });
@@ -654,9 +665,7 @@ function usageCard(groups, total, totalCount, weeks, currency, env) {
   card.appendChild(
     cardHead(
       "Am I using what I pay for?",
-      totalCount === 0
-        ? "no finished week in this range"
-        : `the last ${weeks} week${weeks === 1 ? "" : "s"}`
+      totalCount === 0 ? "no finished week in this range" : rangeWeeksText(weeks)
     )
   );
   const body = h("div", { class: "stats-sub-usage-body" });
@@ -782,7 +791,11 @@ function limitPanel(entry, env) {
     const note = h("p", {
       class: `stats-sub-note ${change === null ? "stats-sub-note-ok" : "stats-sub-note-warn"}`,
     });
-    if (change === null) {
+    const changeMissing = optionalString(entry.changeMissing, "a per-percent entry's changeMissing");
+    if (change === null && changeMissing !== null) {
+      note.className = "stats-sub-note mf";
+      note.textContent = `${changeMissing.charAt(0).toUpperCase()}${changeMissing.slice(1)}.`;
+    } else if (change === null) {
       note.textContent = "Steady. No week left its usual range.";
     } else {
       note.textContent = changeSentence(change, id, limit, env);

@@ -51,6 +51,12 @@ pub fn switches_per_day(switches: u32) -> f64 {
 /// (flickering readings, a per-model limit that blocks while a session is
 /// open) at 12 switches an hour.
 pub const MIN_DWELL_MIN: i64 = 5;
+/// From this percent of its 5 h window an account is left for another whose
+/// window is below it (spec §7.4, S1): the window holds no quota of its own,
+/// so leaving a few minutes before the wall costs nothing, and the usage
+/// figure trails the real use by minutes. The week still counts as full only
+/// at 100 %.
+pub const WINDOW_LEAVE_PERCENT: f64 = 95.0;
 /// The margin of S2, in typical working hours (spec §2.5).
 pub const SLACK_MARGIN_H: f64 = 2.0;
 /// An account whose slack is this many typical working hours or less is at

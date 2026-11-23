@@ -274,6 +274,17 @@ pub fn reason(
                 None => Ok(format!("{who} is full")),
             }
         }
+        Reason::WindowNearlyFull { until } => {
+            let id = active.ok_or(TextError::NoActive)?;
+            let who = abbr(views, id)?;
+            match until {
+                Some(until) => Ok(format!(
+                    "{who}'s 5h window is nearly full; it resets at {}",
+                    format::clock(*until, now, offset)
+                )),
+                None => Ok(format!("{who}'s 5h window is nearly full")),
+            }
+        }
         Reason::WindowOpen => Ok(format!(
             "its 5h window is open and its week resets on {}",
             format::weekday_clock(weekly_reset(views, target)?, offset)
@@ -830,6 +841,31 @@ mod tests {
         .expect("the text is writable")
         .expect("a switch notifies");
         assert_eq!(text, "Auto-burn: now on AC. PR is full until 14:40.");
+    }
+
+    #[cfg(feature = "gui")]
+    #[test]
+    fn a_nearly_full_window_says_when_it_resets() {
+        let views = vec![view("pr", "PR", 20.0, false), view("ac", "AC", 96.0, true)];
+        let decision = Decision::Switch {
+            to: "pr".to_string(),
+            reason: Reason::WindowNearlyFull {
+                until: Some(utc("2026-11-10T14:40:00Z")),
+            },
+        };
+        let text = switch_notification(
+            &decision,
+            Some("ac"),
+            &views,
+            utc("2026-11-10T12:00:00Z"),
+            offset(),
+        )
+        .expect("the text is writable")
+        .expect("a switch notifies");
+        assert_eq!(
+            text,
+            "Auto-burn: now on PR: AC's 5h window is nearly full; it resets at 14:40."
+        );
     }
 
     #[cfg(feature = "gui")]

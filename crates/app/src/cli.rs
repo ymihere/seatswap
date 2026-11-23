@@ -2384,7 +2384,7 @@ pub(crate) mod tests {
     use chrono::FixedOffset;
     use seatswap_core::api::{Limit, LimitKind, Severity, Usage};
     use seatswap_core::burn::decide::RegimeWhy;
-    use seatswap_core::burn::plan::{AccountState, Inputs};
+    use seatswap_core::burn::plan::{AccountState, Inputs, SessionState};
     use seatswap_core::burn::{Rates, Rhythm};
     use seatswap_core::engine::{AccountView, CacheEntry};
     use seatswap_core::history::{LimitSample, Sample, Source, TokenRecord};
@@ -4373,11 +4373,10 @@ pub(crate) mod tests {
         }
     }
 
-    /// PR, AC and LB as the planner needs them: PR at 50 % needs 25 USD; AC
-    /// and LB each need 25 of the 48 USD before their common weekly reset
-    /// after 48 h. The eager plan starts on them at once; the lazy plan waits
-    /// until AC is down to the cushion and cannot empty both, so it blocks 60
-    /// USD of work to the eager plan's 45.
+    /// PR, AC and LB as the planner needs them, with lazy and eager plans that
+    /// differ: PR at 50 % resets on 18 Nov; AC, uncapped and fresh, resets in
+    /// 24 h; LB at 60 % resets in 48 h and its 5 h window holds only 2.5 USD.
+    /// The lazy plan blocks 7.5 USD of work, the eager one none.
     fn burn_plan_inputs() -> Inputs {
         let now = DateTime::parse_from_rfc3339("2026-11-10T12:00:00Z")
             .expect("a test time")
@@ -4395,16 +4394,35 @@ pub(crate) mod tests {
             rates: Some(Rates::given(c, None)),
             thinking_held: 0,
         };
+        // lb's 5 h window holds only 2.5 USD: the eager plan takes its windows
+        // as they open and keeps ac for the gaps, the lazy plan uses ac up first
+        // and blocks 7.5 USD of work.
+        let mut lb = state("lb", 4.0, 60.0, "2026-11-13T12:00:00Z");
+        lb.session = Some(SessionState {
+            percent: 0.0,
+            resets_at: None,
+        });
+        lb.rates = Some(Rates::given(4.0, Some(40.0)));
         Inputs {
             now,
             offset: FixedOffset::east_opt(0).expect("UTC"),
             accounts: vec![
                 state("pr", 2.0, 50.0, "2026-11-18T12:00:00Z"),
                 state("ac", 4.0, 0.0, "2026-11-12T12:00:00Z"),
-                state("lb", 4.0, 0.0, "2026-11-12T12:00:00Z"),
+                lb,
             ],
             active: Some("pr".to_string()),
-            rhythm: Rhythm { usd: [1.0; 168] },
+            // One USD an hour from 07:00 to 23:00, with a break at 17:00.
+            rhythm: Rhythm {
+                usd: std::array::from_fn(|index| {
+                    let hour = index % 24;
+                    if (7..23).contains(&hour) && hour != 17 {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                }),
+            },
             last_switch_at: None,
             paused_until: None,
         }

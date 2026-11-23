@@ -5,8 +5,8 @@
 use chrono::{DateTime, Duration, Utc};
 
 use super::plan::{
-    blocked, choose, early_move_allowed, early_move_due, follow, rates_known, rhythm_walk, slack,
-    usable_again, Inputs, PlanError, Policy,
+    blocked, choose, early_move_allowed, early_move_due, follow, leave_due, rates_known,
+    rhythm_walk, shared_slack, slack, usable_again, Inputs, PlanError, Policy,
 };
 use super::{usd_hours, FRESH_MIN, GAIN_FACTOR, HORIZON_H, MIN_COST_SAMPLES, MIN_GAIN_H, STEP_MIN};
 
@@ -82,6 +82,10 @@ pub enum Reason {
     NoneActive,
     /// The active account is blocked (or the login ended or a model blocks it).
     ActiveFull { until: Option<DateTime<Utc>> },
+    /// The active account's 5 h window is at
+    /// [`crate::burn::WINDOW_LEAVE_PERCENT`] or more and another account's
+    /// window is below it; `until` is the end of the active account's window.
+    WindowNearlyFull { until: Option<DateTime<Utc>> },
     /// The target's 5 h window has room.
     WindowOpen,
     /// The target is about to lose unused quota at its weekly reset.
@@ -171,24 +175,29 @@ pub fn regime(situation: &Situation) -> Regime {
 /// 2. and 3. the active account is [`blocked`] or there is none: [`choose`] names
 ///    a target → [`Decision::Switch`] with [`Reason::ActiveFull`] (or
 ///    [`Reason::NoneActive`] when there is no active account), else
-///    [`Decision::AllFull`];
+///    [`Decision::AllFull`]; when [`leave_due`] says the active account's
+///    5 h window is nearly full and another account's has room →
+///    [`Decision::Switch`] with [`Reason::WindowNearlyFull`] to the account
+///    [`choose`] names (it prefers windows with room);
 /// 4. a pause that ends in the future, or the last switch less than
 ///    [`MIN_DWELL_MIN`] ago ([`early_move_allowed`], the rule both plans
 ///    play) → [`Decision::Stay`];
 /// 5. [`choose`] names another account and [`early_move_due`] says yes: its
 ///    slack is at least [`crate::burn::SLACK_MARGIN_H`] × the typical hour
 ///    below the active one's, and early switching is on ([`Regime::early`]) or
-///    the target's slack is at most [`crate::burn::EXPIRY_CUSHION_H`] × the
-///    typical hour (it is at risk of losing quota): with no
-///    busy tied session → [`Decision::Switch`] (`WindowOpen` when the target has
-///    a 5 h limit, else `ResetNear`); with one → [`Decision::Wait`] until the
-///    rhythm's work from now reaches the target's slack. A slack of 0 or less
+///    the target's [`shared_slack`] is at most [`crate::burn::EXPIRY_CUSHION_H`]
+///    × the typical hour (it is at risk of losing quota, alone or with the
+///    accounts that reset before it): with no busy tied session →
+///    [`Decision::Switch`] (`WindowOpen` when the target has a 5 h limit, else
+///    `ResetNear`); with one → [`Decision::Wait`] until the rhythm's work from
+///    now reaches the target's shared slack. A shared slack of 0 or less
 ///    switches at once;
 /// 6. otherwise [`Decision::Stay`].
 ///
-/// Step 3 tests the active account for `blocked`, not for `usable`: an account
-/// auto-burn may not use is left only when it is blocked (spec §2.6), and it
-/// never gives `AllFull` while it is not blocked. Step 5 needs the active
+/// Step 3 tests the active account for `blocked` and [`leave_due`], not for
+/// `usable`: an account auto-burn may not use is left only when it is blocked
+/// or its 5 h window is nearly full (spec §2.6), and it never gives `AllFull`
+/// while it is not blocked. Step 5 needs the active
 /// account's slack and an active account auto-burn may use; when either is
 /// missing there is no early switch.
 ///
@@ -201,11 +210,11 @@ pub fn decide(situation: &Situation, regime: &Regime) -> Decision {
         return Decision::Stale;
     }
 
-    let active = inputs
+    let active_index = inputs
         .active
         .as_ref()
-        .and_then(|id| inputs.accounts.iter().find(|account| &account.id == id));
-    let Some(active) = active else {
+        .and_then(|id| inputs.accounts.iter().position(|account| &account.id == id));
+    let Some(active_index) = active_index else {
         return match choose(inputs, now) {
             Some(to) => Decision::Switch {
                 to,
@@ -216,6 +225,7 @@ pub fn decide(situation: &Situation, regime: &Regime) -> Decision {
             },
         };
     };
+    let active = &inputs.accounts[active_index];
     if blocked(active, now) {
         return match choose(inputs, now) {
             Some(to) => Decision::Switch {
@@ -226,6 +236,20 @@ pub fn decide(situation: &Situation, regime: &Regime) -> Decision {
             },
             None => Decision::AllFull {
                 next: next_free(inputs),
+            },
+        };
+    }
+
+    if leave_due(inputs, active_index) {
+        // `leave_due` found another usable account whose window has room, so
+        // `choose` names one.
+        let Some(to) = choose(inputs, now) else {
+            return Decision::Stay;
+        };
+        return Decision::Switch {
+            to,
+            reason: Reason::WindowNearlyFull {
+                until: active.session.as_ref().and_then(|state| state.resets_at),
             },
         };
     }
@@ -246,13 +270,17 @@ pub fn decide(situation: &Situation, regime: &Regime) -> Decision {
     let Some(target) = inputs.accounts.iter().find(|account| account.id == to) else {
         return Decision::Stay;
     };
-    let (Some(target_slack), Some(active_slack)) = (slack(target, inputs), slack(active, inputs))
-    else {
+    let (Some(target_slack), Some(target_shared), Some(active_slack)) = (
+        slack(target, inputs),
+        shared_slack(target, inputs),
+        slack(active, inputs),
+    ) else {
         return Decision::Stay;
     };
     if !early_move_due(
         regime.early,
         target_slack,
+        target_shared,
         active_slack,
         inputs.rhythm.typical_hour(),
     ) {
@@ -263,12 +291,12 @@ pub fn decide(situation: &Situation, regime: &Regime) -> Decision {
     } else {
         Reason::ResetNear
     };
-    if situation.tied_busy == 0 || target_slack <= 0.0 {
+    if situation.tied_busy == 0 || target_shared <= 0.0 {
         Decision::Switch { to, reason }
     } else {
         Decision::Wait {
             to,
-            latest: latest_reaching(inputs, target_slack),
+            latest: latest_reaching(inputs, target_shared),
             tied_busy: situation.tied_busy,
             reason,
         }
@@ -315,7 +343,7 @@ fn latest_reaching(inputs: &Inputs, target_usd: f64) -> DateTime<Utc> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::burn::plan::testkit::{account, calm, crowded, inputs, now, utc, week, EPS};
+    use crate::burn::plan::testkit::{account, calm, crowded, inputs, narrow, now, utc, week, EPS};
     use crate::burn::plan::SessionState;
     use crate::burn::{Rates, SLACK_MARGIN_H};
 
@@ -381,6 +409,40 @@ mod tests {
                 },
             }
         );
+    }
+
+    #[test]
+    fn a_nearly_full_window_switches_to_an_account_with_room() {
+        let mut inputs = inputs();
+        inputs.active = Some("AC".to_string());
+        let window_end = now() + Duration::hours(2);
+        inputs.accounts[1].session = Some(SessionState {
+            percent: 96.0,
+            resets_at: Some(window_end),
+        });
+        let mut situation = situation(inputs);
+        // Lazy regime, a busy tied session: neither holds the move back.
+        situation.tied_busy = 2;
+        let state = Regime {
+            early: false,
+            why: RegimeWhy::NotWorthIt,
+            ..pays()
+        };
+        let Decision::Switch { to, reason } = decide(&situation, &state) else {
+            panic!("expected a switch");
+        };
+        assert_ne!(to, "AC");
+        assert_eq!(
+            reason,
+            Reason::WindowNearlyFull {
+                until: Some(window_end)
+            }
+        );
+
+        // With no other window that has room it stays, and it is not full.
+        situation.inputs.accounts[0].may_use = false;
+        situation.inputs.accounts[2].may_use = false;
+        assert_eq!(decide(&situation, &state), Decision::Stay);
     }
 
     #[test]
@@ -500,16 +562,16 @@ mod tests {
     }
 
     #[test]
-    fn two_accounts_that_reset_together_make_early_switching_pay() {
-        // The crowded setup: eager is blocked 6.5 h less than lazy, with 14
+    fn a_narrow_window_makes_early_switching_pay() {
+        // The narrow setup: eager is blocked 9.5 h less than lazy, with 18
         // more switches at 0.05 h each, so the gain is above both rules.
-        let situation = situation(crowded());
+        let situation = situation(narrow());
         let state = regime(&situation);
         assert!(state.early);
         assert_eq!(state.why, RegimeWhy::Pays);
-        assert!((state.lazy_blocked_h - 6.5).abs() < EPS, "{state:?}");
+        assert!((state.lazy_blocked_h - 9.5).abs() < EPS, "{state:?}");
         assert!(state.eager_blocked_h.abs() < EPS, "{state:?}");
-        assert_eq!(state.extra_switches, 14);
+        assert_eq!(state.extra_switches, 18);
         assert_eq!(
             decide(&situation, &state),
             Decision::Switch {
@@ -517,6 +579,38 @@ mod tests {
                 reason: Reason::ResetNear,
             }
         );
+    }
+
+    #[test]
+    fn accounts_that_reset_together_are_at_risk_together() {
+        // The crowded setup: AC and LB have 17.5 USD of slack each, above the
+        // cushion, but a shared slack of 0. Early switching does not pay, and
+        // auto-burn still leaves PR at once, even past a busy tied session.
+        let mut situation = situation(crowded());
+        let state = regime(&situation);
+        assert!(!state.early, "{state:?}");
+        situation.tied_busy = 1;
+        assert_eq!(
+            decide(&situation, &state),
+            Decision::Switch {
+                to: "AC".to_string(),
+                reason: Reason::ResetNear,
+            }
+        );
+    }
+
+    #[test]
+    fn two_accounts_at_risk_together_do_not_take_turns() {
+        // On LB, choose() names AC (the same slack and reset, the lower id),
+        // whose shared slack is 0. The margin compares own slacks, which are
+        // equal, so the shared deficit is no reason to move to AC and back.
+        let mut inputs = crowded();
+        inputs.active = Some("LB".to_string());
+        assert_eq!(choose(&inputs, now()), Some("AC".to_string()));
+        let situation = situation(inputs);
+        let state = regime(&situation);
+        assert!(!state.early, "{state:?}");
+        assert_eq!(decide(&situation, &state), Decision::Stay);
     }
 
     #[test]
@@ -594,12 +688,12 @@ mod tests {
 
     #[test]
     fn a_tied_busy_session_makes_it_wait() {
-        // The crowded setup: AC's slack is 17.5 USD, 17.5 working hours at the
-        // test rhythm's 1.0 USD per working hour (14 on Monday from 08:00, then
-        // Tuesday 07:00 to 10:30), and choose() names it.
-        let inputs = crowded();
-        let ac_slack = slack(&inputs.accounts[1], &inputs).expect("AC has rates");
-        assert!((ac_slack - 17.5).abs() < EPS, "{ac_slack}");
+        // The narrow setup: AC's shared slack is 10 USD, 10 working hours at
+        // the test rhythm's 1.0 USD per working hour (Monday 08:00 to 17:00,
+        // then 18:00 to 19:00), and choose() names it.
+        let inputs = narrow();
+        let ac_shared = shared_slack(&inputs.accounts[1], &inputs).expect("AC has rates");
+        assert!((ac_shared - 10.0).abs() < EPS, "{ac_shared}");
         assert_eq!(choose(&inputs, now()), Some("AC".to_string()));
 
         let mut situation = situation(inputs);
@@ -610,7 +704,7 @@ mod tests {
             decide(&situation, &state),
             Decision::Wait {
                 to: "AC".to_string(),
-                latest: utc("2026-11-17T10:30:00Z"),
+                latest: utc("2026-11-16T19:00:00Z"),
                 tied_busy: 1,
                 reason: Reason::ResetNear,
             }

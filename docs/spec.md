@@ -296,6 +296,16 @@ what it did; §11.4 counts both windows. The recorder, the "usable again" notifi
 auto-burn's learned rates all use that one rule. A pair of readings that the rule calls a reset is
 left out of the learned rates, because the drop is not use.
 
+**A reset time that moves later.** A window ends at its reset time, or earlier when the next reading
+names a reset time a whole window length later (7 days, 5 hours; less 60 seconds): the computer's
+clock was behind and the new window has begun. A reset time that moves later by less is the same
+window going on. An unused Codex limit names a reset one window length after every reading, so its
+reset time moves later by minutes at each poll; until 1.5.3 the recorder wrote a finished window for
+each such move. The reader leaves those records out: an ordinary window whose next window of the
+same account, limit and model ends later but was read more than 60 seconds before this one's end
+did not end: that reading saw the limit still running. The statistics pages name how many records
+were left out in their warnings.
+
 **An Ollama hour.** `ollama-YYYY-MM.jsonl` lines are `{"hour":"2026-11-16T10:00:00Z","requests":17,"input":210000,"cachedInput":160000,"output":26000,"usd":0.12}`. An hour is written once and replaced only by a later answer for the same hour whose counts did not shrink and at least one grew; an answer in which one count of the hour is smaller than that hour's last line is not written, and the hour is named once. The record belongs to no Claude account and never counts in a subscription value; §11.4's Activity page reads it.
 
 **A token line's `min`.** Since 1.3 every new token line carries `"min": 5` and covers the 5-minute
@@ -503,31 +513,49 @@ no modes and no tuning settings: every threshold is a constant in the code (see 
 
 | # | Trigger | What happens |
 |---|---|---|
-| S1 | The active account is blocked, or there is none | switch at once to the usable account with the least slack |
-| S2 | Another usable account has clearly less slack | when it is at risk of losing quota (its slack is 8 typical working hours or less): switch to it; otherwise only while early switching is on. At a quiet moment (below), at once when its slack is 0 or less |
+| S1 | The active account is blocked, or there is none; or its 5h window is at 95 % or more and another usable account's window is below 95 % | switch at once to the usable account with the least slack, preferring one whose 5h window is below 95 % |
+| S2 | Another usable account has clearly less slack | when it is at risk of losing quota (its shared slack is 8 typical working hours or less): switch to it; otherwise only while early switching is on. At a quiet moment (below), at once when its shared slack is 0 or less |
 | S3 | Nothing is usable | no switch; the "All accounts are full" notification of §7.5, and the reset poll of §7.1 |
 
 - **Blocked** means the week or the 5h window is at 100 % or more, the login has ended, or a
   per-model limit at 100 % blocks the account while a session on that model is open (§7.2).
+- **A nearly full 5h window is left at 95 %.** The window holds no quota of its own: what the account
+  does not use in it stays in its week. So leaving 5 % before the wall costs nothing, while the
+  usage figure trails the real use by a few minutes and Claude Code may stop at the wall before
+  seatswap reads 100 %. The move needs another usable account whose 5h window is below 95 % (an
+  uncapped account always is), no pause and at least 5 minutes since the last switch, like an early
+  move. With no such account auto-burn stays and the account works to 100 %; it is not full and
+  never gives "All accounts are full" at 95 %. `choose` passes over accounts whose window is at
+  95 % or more while another usable account's is below. The week still counts as full only at
+  100 %: quota left there is gone until the reset. The icon shows the real figure. The plans
+  (§2.4) and the Forecast play the same rule.
 - **Least slack** is the work the account can still take before its weekly reset minus the work
   needed to empty it. A capped account can only take a window's worth at a time, so its remaining
   5h windows count, not just its percent. An account whose rates are not learned yet is played
   like one without rates: the fixed order is used instead, capped accounts with an open window
   first, then the others, each by the earlier weekly reset and then the account id.
+- **Shared slack:** work goes to one account at a time, so accounts whose weeks reset close
+  together can each have room alone and still lose quota together. For each weekly reset at or
+  after the account's own, take the work until that reset (at most what the accounts resetting by
+  then can take) minus the work needed to empty them; the shared slack is the least of these and
+  the account's own slack. Two accounts resetting together, each needing 20 of the 37 working
+  hours left, have 17 hours of slack each but a shared slack of −3. Only accounts auto-burn may use,
+  with a live login, no per-model block, a week below 100 % and known rates count.
 - **S2** needs another usable account whose slack is at least 2 typical working hours below the
   active account's, at least 5 minutes since the last switch of any kind, and no pause (§7.4.3).
-  When that account's slack is 8 typical working hours or less, it is at risk of losing quota at its
-  weekly reset: slack counts only the usual working hours, and every hour the machines are off
-  beyond them costs quota. So auto-burn switches to it whether early switching is on or not, also
-  back to it once its 5h window has reset. Keeping quota from expiring comes before saving a
-  switch. With a slack above that cushion it switches only when the expected saved hours are worth
-  it (below).
+  When that account's shared slack is 8 typical working hours or less, it is at risk of losing
+  quota at its weekly reset, alone or with the accounts that reset before it: slack counts only the
+  usual working hours, and every hour the machines are off beyond them costs quota. So auto-burn
+  switches to it whether early switching is on or not, also back to it once its 5h window has
+  reset. Keeping quota from expiring comes before saving a switch. With a shared slack above that
+  cushion it switches only when the expected saved hours are worth it (below). The 2-hour margin
+  compares the accounts' own slacks, so two accounts at risk together do not take turns.
 - **Seeing 100 % quickly:** the active account is polled every 30 s while its binding limit is at
   90 % or more and below 100 % (§7.1), and the status line feed (§7.6) brings the live numbers
   without a request.
 - An account with `autoBurn` off is never a target and is never suggested. When it is the active
-  account and gets blocked, S1 still leaves it (§7.4.4). While such an account is not blocked,
-  auto-burn stays on it: S3 is reached only when the active account is blocked (or there is none)
+  account and gets blocked, S1 still leaves it (§7.4.4), and so does the 95 % rule for its 5h
+  window. While such an account is not blocked, auto-burn stays on it: S3 is reached only when the active account is blocked (or there is none)
   and `choose` finds no usable account. An active account auto-burn may not use is also not a
   reason for S2.
 - **Going back restores a session's earlier thinking.** When every usable account has a learned
@@ -554,13 +582,14 @@ While early switching is on, the pop-up's next line, `burn-next.json`, the statu
 auto-burn segment and `status --json`'s `next` follow the plan auto-burn follows — the eager plan —
 and otherwise the lazy plan, which leaves an account before 100 % only for one at risk of losing
 quota. That is the same plan the Forecast shows. The suggestion's "Staying on …" sentence is the
-plan that switches only at 100 % ("only when full"), not the followed plan.
+plan that switches only when the account is full ("only when full": blocked, or its 5h window at
+95 % with another window that has room), not the followed plan.
 
 #### 7.4.1 The regime
 
 Once an hour seatswap plans the next 7 days twice: the **lazy** plan stays on an account until it
 is blocked and then takes the one with the least slack, and it moves earlier only to an account
-at risk of losing quota (S2 with a slack of 8 typical working hours or less); the **eager** plan also takes the usable
+at risk of losing quota (S2 with a shared slack of 8 typical working hours or less); the **eager** plan also takes the usable
 account with the least slack when it has at least 2 typical working hours less slack. Both make
 at most one early move per 5 minutes. Both start from the real last switch and the pause
 (§7.4.3): the first early move comes no sooner than 5 minutes after that switch and not before the
@@ -637,11 +666,11 @@ A switch makes a running session send its conversation again, and on some models
 without its earlier thinking (`thinking_tied` in `docs/implementation.md`); a model off the Claude
 plan (Harness, Codex, Ollama) is never tied, since a switch does not touch it. S2 therefore waits
 while sessions on such a model are busy: the decision is a *waiting switch* to the target, with the
-latest time at which the rhythm's work from now reaches the target's slack (the end of the 7-day
+latest time at which the rhythm's work from now reaches the target's shared slack (the end of the 7-day
 horizon when it never does). The pop-up
 shows `A switch to AC is waiting: 2 sessions on a model that would lose its thinking are busy. At
 the latest 18:40.` and the switch happens when those sessions are no longer busy, or at the latest
-time. A target with no slack left is switched to at once instead of waiting. S1 and S3 never wait.
+time. A target with no shared slack left is switched to at once instead of waiting. S1 and S3 never wait.
 With `readSessions` off there is no session count and S2 does not wait.
 
 #### 7.4.3 Working by hand
@@ -676,7 +705,7 @@ minutes are not shown (`3d 4h`); `about 2h` keeps its word.
 - **An automatic switch** (when `notifyOnSwitch` is on): `Auto-burn: now on PR. AC is full until
   14:40.` or `Auto-burn: now on PR: its week resets on Mon 02:00.`
 - **A suggestion** (auto-burn off): `Switch to AC now: its 5h window is open and its week resets
-  on Mon 02:00.` When the plan that switches only at 100 % ("only when full"), not the plan auto-burn
+  on Mon 02:00.` When the plan that switches only when full ("only when full"), not the plan auto-burn
   follows, expects more than 1 % of the target's week to be left unused at its reset, it adds
   ` Staying on PR is expected to let 12 % of AC expire.` The pop-up shows the same sentence and a
   [Switch] button; the desktop notification is sent once per target and hour.
@@ -1954,7 +1983,9 @@ The four cards:
   long). The split by model is the **Tokens a week** card's. Without a worked hour the cell is `—`
   titled `no hour with priced work of this company in the last 4 weeks`. **Over the weeks** says `steady`, or names a change (`gpt-6-astra 24h → 19h since 19 Oct`)
   when two consecutive finished weeks (one calendar week apart; a week without a point breaks the
-  run) lie on the same side outside the range of the 8 weeks before (documented rule). **Based on** shows the factor's `basis_usd` in worked hours; the figure is
+  run) lie on the same side outside the range of the 8 weeks before (documented rule). That rule
+  needs 10 weeks (Ollama: months); with fewer in the range it is `—`, titled `too few weeks to tell a
+  change: 7 of the 10 it needs`: a short line is not steady, it is too short to tell (1.5.3). **Based on** shows the factor's `basis_usd` in worked hours; the figure is
   marked `thin` when half its range's width is more than 20 % of its value (documented rule). Below
   it, **Plan sizes, measured**: each plan's week factor against the reference plan — the measured
   Anthropic plan with the largest `basis_usd`, or no reference when none is measured — as
@@ -1973,7 +2004,8 @@ The four cards:
   with the most work), `1 / (factor_week × usd_per_token(model))`, with the range as two dashed
   lines. A change is found by the same two-week rule as above; the sentence above the chart says
   `Since <date>, 1 % of <abbr>'s week buys about N % fewer <model> tokens: A instead of B` and a mark
-  shows the week; otherwise it says `Steady. No week left its usual range.` Under it stand the
+  shows the week; otherwise it says `Steady. No week left its usual range.`, or with fewer than 10
+  points `Too few weeks to tell a change: 7 of the 10 it needs.` Under it stand the
   tokens 1 % buys of each model, then `1 % ≈ N min of your work` (`1 / factor` API dollars over the
   worked hour); for 5h also how much work a full window holds, in the same worked hours.
 - **Tokens a week, per subscription and model.** Rows are the subscriptions with a week (Ollama has

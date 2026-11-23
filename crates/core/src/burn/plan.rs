@@ -13,7 +13,10 @@ use crate::api::{Limit, LimitKind, Severity};
 use crate::transcripts::hour_start;
 
 use super::decide::Regime;
-use super::{Rates, Rhythm, EXPIRY_CUSHION_H, HORIZON_H, MIN_DWELL_MIN, SLACK_MARGIN_H, STEP_MIN};
+use super::{
+    Rates, Rhythm, EXPIRY_CUSHION_H, HORIZON_H, MIN_DWELL_MIN, SLACK_MARGIN_H, STEP_MIN,
+    WINDOW_LEAVE_PERCENT,
+};
 
 /// A 5 h window lasts this many hours (spec §2.1).
 const WINDOW_H: i64 = 5;
@@ -162,7 +165,9 @@ fn valid_percent(percent: f64) -> bool {
 /// what the Forecast and the suggestion compare them with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Policy {
-    /// Stay on the current account until it is not usable: "only when full".
+    /// Stay on the current account until [`leave_due`] says to leave it
+    /// (blocked, or its 5 h window at [`WINDOW_LEAVE_PERCENT`] with another
+    /// window that has room): "only when full".
     WhenFull,
     /// Stay on the current account until it is not usable, or until another
     /// account with clearly less slack has a slack of at most
@@ -221,6 +226,47 @@ pub fn usable(account: &AccountState, at: DateTime<Utc>) -> bool {
     account.may_use && !blocked(account, at)
 }
 
+/// Whether auto-burn leaves `inputs.accounts[index]` at `inputs.now` (spec
+/// §7.4, S1): it is [`blocked`], or its 5 h window is at
+/// [`WINDOW_LEAVE_PERCENT`] or more while another account is usable with its
+/// window below that, no pause runs and the last switch is at least
+/// [`MIN_DWELL_MIN`] ago ([`early_move_allowed`]: a move before the wall waits
+/// like an early move). With no such account it stays and works to 100 %.
+/// The one copy of the rule: [`crate::burn::decide::decide`] and every plan
+/// use it. `index` must be an index of `inputs.accounts`.
+pub fn leave_due(inputs: &Inputs, index: usize) -> bool {
+    let views: Vec<View<'_>> = inputs
+        .accounts
+        .iter()
+        .map(|account| View::of(account, inputs.now))
+        .collect();
+    leave_due_of(
+        &views,
+        index,
+        inputs.now,
+        inputs.last_switch_at,
+        inputs.paused_until,
+    )
+}
+
+/// [`leave_due`] of `views[index]` at `at`.
+fn leave_due_of(
+    views: &[View<'_>],
+    index: usize,
+    at: DateTime<Utc>,
+    last_switch: Option<DateTime<Utc>>,
+    paused_until: Option<DateTime<Utc>>,
+) -> bool {
+    let view = &views[index];
+    view.blocked(at)
+        || (view.window_nearly_full(at)
+            && early_move_allowed(last_switch, paused_until, at)
+            && views
+                .iter()
+                .enumerate()
+                .any(|(other, candidate)| other != index && candidate.roomy(at)))
+}
+
 /// The time the account is usable again as far as its limits say (spec §2.5):
 /// the latest reset among the limits that block at `at` — its weekly reset when
 /// its week is at 100 %, its 5 h reset when its window is at 100 % and has not
@@ -263,6 +309,28 @@ pub(crate) fn week_percent_at(account: &AccountState, at: DateTime<Utc>) -> f64 
 pub fn slack(account: &AccountState, inputs: &Inputs) -> Option<f64> {
     let walk = rhythm_walk(inputs);
     View::of(account, inputs.now).slack(inputs.now, &walk)
+}
+
+/// The slack an account shares with the accounts that reset before it or with
+/// it (spec §2.3): work goes to one account at a time, so two accounts that
+/// reset close together can each have room alone and still lose quota
+/// together. For each weekly reset at or after the account's own, the USD the
+/// work up to that reset can bring to the accounts that reset by then, less
+/// the USD needed to empty them; the least of these and the account's own
+/// [`slack`]. Only accounts that share the work count ([`View::shares_work`]),
+/// and only those with known rates. `None` while the account's own rates are
+/// unknown or it is not one of [`Inputs::accounts`].
+pub fn shared_slack(account: &AccountState, inputs: &Inputs) -> Option<f64> {
+    let views: Vec<View<'_>> = inputs
+        .accounts
+        .iter()
+        .map(|account| View::of(account, inputs.now))
+        .collect();
+    let index = inputs
+        .accounts
+        .iter()
+        .position(|other| other.id == account.id)?;
+    shared_slack_of(&views, index, inputs.now, &rhythm_walk(inputs))
 }
 
 /// The walk of the learned rhythm: every step carries a quarter of the work of
@@ -401,10 +469,10 @@ pub fn choose(inputs: &Inputs, at: DateTime<Utc>) -> Option<String> {
 /// previous one ended and lasts 5 h.
 ///
 /// An active account auto-burn may not use (`may_use` false) stays `current`
-/// under every policy while it is not [`blocked`]: no plan leaves it by an
-/// early move. Once it is blocked it is left, and it is never chosen again,
-/// because [`choose`] only takes usable accounts (spec §2.6: S1 still leaves it
-/// when it gets blocked).
+/// under every policy until [`leave_due`] says to leave it: no plan leaves it
+/// by an early move. Once it is left it is never chosen again, because
+/// [`choose`] only takes usable accounts (spec §2.6: S1 still leaves it when it
+/// gets blocked or its 5 h window is nearly full).
 pub fn follow(inputs: &Inputs, policy: Policy) -> Plan {
     play(
         inputs,
@@ -473,7 +541,7 @@ pub(super) fn play(inputs: &Inputs, policy: Policy, walk: &Walk<'_>, typical: f6
         }
 
         let choice = match current {
-            Some(index) if !views[index].blocked(t) => {
+            Some(index) if !leave_due_of(&views, index, t, last_switch, inputs.paused_until) => {
                 if views[index].usable(t) {
                     early_move(
                         &views,
@@ -648,11 +716,21 @@ impl<'a> View<'a> {
     }
 
     fn window_blocked(&self, at: DateTime<Utc>) -> bool {
+        self.window_reaches(100.0, at)
+    }
+
+    /// Whether the 5 h window is at [`WINDOW_LEAVE_PERCENT`] or more and not
+    /// over: the account is left for one whose window is below it (S1).
+    fn window_nearly_full(&self, at: DateTime<Utc>) -> bool {
+        self.window_reaches(WINDOW_LEAVE_PERCENT, at)
+    }
+
+    fn window_reaches(&self, percent: f64, at: DateTime<Utc>) -> bool {
         if !self.capped() {
             return false;
         }
-        // The same rule `engine::blocking_limit` uses: a session limit at 100 %
-        // whose reset is not at or before `at`.
+        // The same rule `engine::blocking_limit` uses: a session limit at the
+        // percent whose reset is not at or before `at`.
         Limit {
             kind: LimitKind::Session,
             percent: self.session,
@@ -661,7 +739,7 @@ impl<'a> View<'a> {
             model: None,
             is_active: false,
         }
-        .is_full_at(at)
+        .reaches_at(percent, at)
     }
 
     /// An account is full when its week is at 100 % or its 5 h window is at
@@ -718,7 +796,20 @@ impl<'a> View<'a> {
         self.account.may_use && !self.blocked(at)
     }
 
+    /// Usable, with its 5 h window below [`WINDOW_LEAVE_PERCENT`] (an
+    /// uncapped account always is).
+    fn roomy(&self, at: DateTime<Utc>) -> bool {
+        self.usable(at) && !self.window_nearly_full(at)
+    }
+
     fn slack(&self, at: DateTime<Utc>, walk: &Walk<'_>) -> Option<f64> {
+        self.room(at, walk).map(|(take, need)| take - need)
+    }
+
+    /// The two halves of [`View::slack`]: the USD the account can still take
+    /// before its weekly reset, and the USD needed to empty it. `None` while
+    /// the rates are unknown.
+    fn room(&self, at: DateTime<Utc>, walk: &Walk<'_>) -> Option<(f64, f64)> {
         let rates = self.rates()?;
         let week = self.week;
         let mut view = *self;
@@ -732,7 +823,18 @@ impl<'a> View<'a> {
                 usable_usd += view.apply(cursor, work);
             }
         }
-        Some(usable_usd - (100.0 - week) / rates.c.value)
+        Some((usable_usd, (100.0 - week) / rates.c.value))
+    }
+
+    /// Whether the account shares the work before the weekly resets
+    /// ([`shared_slack_of`]): auto-burn may use it, its login is live, no
+    /// per-model limit blocks it and its week is not full. A full 5 h window
+    /// does not take it out: it takes work again before its weekly reset.
+    fn shares_work(&self) -> bool {
+        self.account.may_use
+            && self.account.login_ok
+            && !self.account.model_blocked
+            && self.week < 100.0
     }
 
     /// Apply one step's work to the account: its week grows by `c`, its open
@@ -757,6 +859,42 @@ impl<'a> View<'a> {
     }
 }
 
+/// [`shared_slack`] of `views[index]` at `at`: the one copy of the rule, which
+/// the decision and the plans use.
+fn shared_slack_of(
+    views: &[View<'_>],
+    index: usize,
+    at: DateTime<Utc>,
+    walk: &Walk<'_>,
+) -> Option<f64> {
+    let own = views[index].slack(at, walk)?;
+    let sharing: Vec<(DateTime<Utc>, f64, f64)> = views
+        .iter()
+        .filter(|view| view.shares_work())
+        .filter_map(|view| {
+            view.room(at, walk)
+                .map(|(take, need)| (view.reset, take, need))
+        })
+        .collect();
+    let mut least = own;
+    for &(until, _, _) in sharing
+        .iter()
+        .filter(|(reset, _, _)| *reset >= views[index].reset)
+    {
+        let (take, need) = sharing
+            .iter()
+            .filter(|(reset, _, _)| *reset <= until)
+            .fold((0.0, 0.0), |(take, need), (_, t, n)| (take + t, need + n));
+        let work: f64 = walk
+            .horizon_from(at)
+            .take_while(|(cursor, _)| *cursor < until)
+            .map(|(_, work)| work)
+            .sum();
+        least = least.min(work.min(take) - need);
+    }
+    Some(least)
+}
+
 /// The index of the account [`choose`] would name: the usable account with the
 /// least slack, or the fixed order when any usable account has no rates.
 ///
@@ -771,6 +909,9 @@ fn pick(views: &[View<'_>], at: DateTime<Utc>, walk: &Walk<'_>, typical: f64) ->
         .collect();
     if usable.is_empty() {
         return None;
+    }
+    if usable.iter().any(|&index| views[index].roomy(at)) {
+        usable.retain(|&index| views[index].roomy(at));
     }
     if usable
         .iter()
@@ -843,24 +984,29 @@ pub(super) fn early_move_allowed(
         && paused_until.is_none_or(|until| until <= at)
 }
 
-/// Whether an early move (S2) to a target with `target_slack` is due while the
-/// active account has `current_slack` (spec §2.5): the target's slack is at
-/// least [`SLACK_MARGIN_H`] × `typical` below the active one's, and either
-/// early switching is on (`early`) or the target's slack is at most
+/// Whether an early move (S2) to a target with `target_slack` and
+/// `target_shared` ([`shared_slack`]) is due while the active account has
+/// `current_slack` (spec §2.5): the target's slack is at least
+/// [`SLACK_MARGIN_H`] × `typical` below the active one's, and either early
+/// switching is on (`early`) or the target's shared slack is at most
 /// [`EXPIRY_CUSHION_H`] × `typical`. Then it is at risk of losing quota at its
-/// weekly reset: the slack counts only the usual working hours, and every hour
-/// the machines are off beyond them costs quota, while a switch costs only the
-/// switch. Never while `typical` is 0.0: the margin has no unit then. The one copy of the rule:
-/// [`crate::burn::decide::decide`] and both plans use it.
+/// weekly reset, alone or with the accounts that reset before it: the slack
+/// counts only the usual working hours, and every hour the machines are off
+/// beyond them costs quota, while a switch costs only the switch. The margin
+/// compares the accounts' own slacks, so two accounts that are at risk
+/// together never take turns. Never while `typical` is 0.0: the margin has no
+/// unit then. The one copy of the rule: [`crate::burn::decide::decide`] and
+/// both plans use it.
 pub(super) fn early_move_due(
     early: bool,
     target_slack: f64,
+    target_shared: f64,
     current_slack: f64,
     typical: f64,
 ) -> bool {
     typical > 0.0
         && target_slack <= current_slack - SLACK_MARGIN_H * typical
-        && (early || target_slack <= EXPIRY_CUSHION_H * typical)
+        && (early || target_shared <= EXPIRY_CUSHION_H * typical)
 }
 
 /// The early move of a plan (spec §2.5, S2): the account [`choose`] names,
@@ -891,8 +1037,9 @@ fn early_move(
         return None;
     }
     let target_slack = views[target].slack(at, walk)?;
+    let target_shared = shared_slack_of(views, target, at, walk)?;
     let current_slack = views[current].slack(at, walk)?;
-    early_move_due(early, target_slack, current_slack, typical).then_some(target)
+    early_move_due(early, target_slack, target_shared, current_slack, typical).then_some(target)
 }
 
 /// The first weekly reset after `at`: the account's reset time repeated every
@@ -1025,12 +1172,12 @@ pub(crate) mod testkit {
         inputs
     }
 
-    /// Two accounts that reset together, where early switching pays: AC and
-    /// LB uncapped (`c` = 4), both at 30 % and both resetting on Wednesday
-    /// 13:00, so each has a slack of 17.5 USD; PR at 80 %. The lazy plan waits
-    /// on PR until AC is down to the cushion and then cannot empty both before
-    /// their reset; the eager plan starts at once. Lazy blocks 6.5 USD with 10
-    /// switches, eager none with 24.
+    /// Two accounts that reset together: AC and LB uncapped (`c` = 4), both
+    /// at 30 % and both resetting on Wednesday 13:00, so each has a slack of
+    /// 17.5 USD alone; PR at 80 %. The 35 USD of work until their reset is
+    /// exactly what the two need together, so their shared slack is 0 and the
+    /// lazy plan moves to them at once. Until 1.5.3 it waited on PR until AC
+    /// alone was down to the cushion and then blocked 6.5 USD.
     pub(crate) fn crowded() -> Inputs {
         let mut inputs = inputs();
         inputs.accounts[0].week_percent = 80.0;
@@ -1040,6 +1187,28 @@ pub(crate) mod testkit {
             account.week_percent = 30.0;
             account.week_resets_at = utc("2026-11-18T13:00:00Z");
         }
+        inputs
+    }
+
+    /// Where early switching pays: LB's 5 h window holds only 2.5 USD of work
+    /// (`s` = 40); LB is at 60 % and resets on Thursday 13:00, AC is uncapped
+    /// (`c` = 4), fresh and resets on Wednesday 13:00, PR is at 80 %. AC's
+    /// slack and shared slack are 10.0, above the cushion. The lazy plan uses
+    /// AC up in one go after its reset and is then left with LB's narrow
+    /// windows, blocking 9.5 USD on Friday and Saturday with 13 switches; the
+    /// eager plan takes each LB window as it opens and keeps AC for the gaps,
+    /// blocking nothing with 31.
+    pub(crate) fn narrow() -> Inputs {
+        let mut inputs = inputs();
+        inputs.accounts[0].week_percent = 80.0;
+        let ac = &mut inputs.accounts[1];
+        ac.rates = Some(Rates::given(4.0, None));
+        ac.session = None;
+        ac.week_resets_at = utc("2026-11-18T13:00:00Z");
+        let lb = &mut inputs.accounts[2];
+        lb.rates = Some(Rates::given(4.0, Some(40.0)));
+        lb.week_percent = 60.0;
+        lb.week_resets_at = utc("2026-11-19T13:00:00Z");
         inputs
     }
 }
@@ -1083,6 +1252,89 @@ mod tests {
         let mut model_blocked = base;
         model_blocked.model_blocked = true;
         assert!(!usable(&model_blocked, now()));
+    }
+
+    /// `inputs()` with AC active and its 5 h window at `percent`, ending in
+    /// two hours.
+    fn ac_window_at(percent: f64) -> Inputs {
+        let mut inputs = inputs();
+        inputs.active = Some("AC".to_string());
+        inputs.accounts[1].session = Some(SessionState {
+            percent,
+            resets_at: Some(now() + Duration::hours(2)),
+        });
+        inputs
+    }
+
+    #[test]
+    fn a_nearly_full_window_is_left_for_one_with_room() {
+        let inputs = ac_window_at(WINDOW_LEAVE_PERCENT);
+        assert!(!blocked(&inputs.accounts[1], now()));
+        assert!(leave_due(&inputs, 1));
+        let plan = follow(&inputs, Policy::WhenFull);
+        let first = plan.segments.first().expect("a segment");
+        assert_eq!(first.from, now());
+        assert_ne!(first.account.as_deref(), Some("AC"), "{:?}", plan.segments);
+
+        let below = ac_window_at(94.9);
+        assert!(!leave_due(&below, 1));
+        assert_eq!(
+            follow(&below, Policy::WhenFull).segments[0]
+                .account
+                .as_deref(),
+            Some("AC")
+        );
+    }
+
+    #[test]
+    fn a_nearly_full_window_whose_end_has_passed_is_not_left() {
+        let mut inputs = ac_window_at(97.0);
+        inputs.accounts[1].session = Some(SessionState {
+            percent: 97.0,
+            resets_at: Some(now() - Duration::minutes(1)),
+        });
+        assert!(!leave_due(&inputs, 1));
+    }
+
+    #[test]
+    fn a_nearly_full_window_is_kept_while_no_other_window_has_room() {
+        let mut inputs = ac_window_at(97.0);
+        inputs.accounts[0].may_use = false;
+        inputs.accounts[2].session = Some(SessionState {
+            percent: 98.0,
+            resets_at: Some(now() + Duration::hours(3)),
+        });
+        assert!(!leave_due(&inputs, 1));
+        let plan = follow(&inputs, Policy::Lazy);
+        assert_eq!(plan.segments[0].account.as_deref(), Some("AC"));
+
+        // A blocked account is still left for one that is nearly full.
+        inputs.accounts[1].session = Some(SessionState {
+            percent: 100.0,
+            resets_at: Some(now() + Duration::hours(2)),
+        });
+        assert!(leave_due(&inputs, 1));
+        assert_eq!(choose(&inputs, now()), Some("LB".to_string()));
+    }
+
+    #[test]
+    fn a_nearly_full_window_waits_for_the_dwell_and_a_pause() {
+        let mut inputs = ac_window_at(97.0);
+        inputs.last_switch_at = Some(now() - Duration::minutes(MIN_DWELL_MIN - 1));
+        assert!(!leave_due(&inputs, 1));
+        inputs.last_switch_at = Some(now() - Duration::minutes(MIN_DWELL_MIN));
+        assert!(leave_due(&inputs, 1));
+        inputs.paused_until = Some(now() + Duration::hours(1));
+        assert!(!leave_due(&inputs, 1));
+    }
+
+    #[test]
+    fn choose_passes_over_a_nearly_full_window() {
+        // AC has the least slack and is chosen while its window has room.
+        assert_eq!(choose(&inputs(), now()), Some("AC".to_string()));
+        let mut inputs = ac_window_at(96.0);
+        inputs.active = Some("PR".to_string());
+        assert_ne!(choose(&inputs, now()), Some("AC".to_string()));
     }
 
     #[test]
@@ -1251,6 +1503,12 @@ mod tests {
         for (slack, expected) in slacks.iter().zip([42.0, 12.0, 15.75]) {
             assert!((slack - expected).abs() < EPS, "{slacks:?}");
         }
+        // AC and LB reset 15 hours apart, each with room to spare: neither
+        // shares a deficit with the other.
+        for (account, expected) in inputs.accounts[1..].iter().zip([12.0, 15.75]) {
+            let shared = shared_slack(account, &inputs).expect("the setup's rates");
+            assert!((shared - expected).abs() < EPS, "{}: {shared}", account.id);
+        }
     }
 
     #[test]
@@ -1321,18 +1579,67 @@ mod tests {
     }
 
     #[test]
-    fn eager_is_blocked_less_than_lazy_when_two_accounts_reset_together() {
+    fn two_accounts_that_reset_together_share_their_slack() {
+        // AC and LB have 17.5 USD of slack each alone, but the 35 USD of work
+        // until their common reset is all the two need: their shared slack is
+        // 0. PR resets after them and shares the work up to its own reset: 92
+        // USD of work, 10 + 17.5 + 17.5 needed, so 47.
+        let inputs = crowded();
+        let expected = [("PR", 82.0, 47.0), ("AC", 17.5, 0.0), ("LB", 17.5, 0.0)];
+        for (account, (id, own, shared)) in inputs.accounts.iter().zip(expected) {
+            assert_eq!(account.id, id);
+            let got = slack(account, &inputs).expect("the setup's rates");
+            assert!((got - own).abs() < EPS, "{id}: {got}");
+            let got = shared_slack(account, &inputs).expect("the setup's rates");
+            assert!((got - shared).abs() < EPS, "{id}: {got}");
+        }
+    }
+
+    #[test]
+    fn lazy_moves_in_time_for_two_accounts_that_reset_together() {
+        // Until 1.5.3 the lazy plan waited on PR until AC alone was down to the
+        // cushion and blocked 6.5 USD; with the shared slack it moves at once.
         let inputs = crowded();
         let lazy = follow(&inputs, Policy::Lazy);
+        assert_eq!(lazy.segments[0].account.as_deref(), Some("AC"));
+        assert!(lazy.blocked_usd.abs() < EPS, "{}", lazy.blocked_usd);
+        assert_eq!(lazy.switches, 12);
         let eager = follow(&inputs, Policy::Eager);
-        assert!((lazy.blocked_usd - 6.5).abs() < EPS, "{}", lazy.blocked_usd);
-        assert!(
-            (eager.blocked_usd - 0.0).abs() < EPS,
-            "{}",
-            eager.blocked_usd
-        );
-        assert_eq!(lazy.switches, 10);
+        assert!(eager.blocked_usd.abs() < EPS, "{}", eager.blocked_usd);
         assert_eq!(eager.switches, 24);
+    }
+
+    #[test]
+    fn eager_is_blocked_less_than_lazy_with_a_narrow_window() {
+        let inputs = narrow();
+        let ac = &inputs.accounts[1];
+        assert!((slack(ac, &inputs).expect("rates") - 10.0).abs() < EPS);
+        assert!((shared_slack(ac, &inputs).expect("rates") - 10.0).abs() < EPS);
+        let lazy = follow(&inputs, Policy::Lazy);
+        let eager = follow(&inputs, Policy::Eager);
+        assert!((lazy.blocked_usd - 9.5).abs() < EPS, "{}", lazy.blocked_usd);
+        assert!(eager.blocked_usd.abs() < EPS, "{}", eager.blocked_usd);
+        assert_eq!((lazy.switches, eager.switches), (13, 31));
+    }
+
+    #[test]
+    fn an_account_that_shares_no_work_is_left_out_of_the_shared_slack() {
+        // LB may not be used: AC resets alone with Wednesday's 35 USD and
+        // needs 17.5 of them, as its own slack says. The same when LB's
+        // login has ended, a per-model limit blocks it or its week is full.
+        let changes: [fn(&mut AccountState); 4] = [
+            |lb| lb.may_use = false,
+            |lb| lb.login_ok = false,
+            |lb| lb.model_blocked = true,
+            |lb| lb.week_percent = 100.0,
+        ];
+        for change in changes {
+            let mut inputs = crowded();
+            change(&mut inputs.accounts[2]);
+            let ac = &inputs.accounts[1];
+            let shared = shared_slack(ac, &inputs).expect("AC has rates");
+            assert!((shared - 17.5).abs() < EPS, "{shared}");
+        }
     }
 
     #[test]

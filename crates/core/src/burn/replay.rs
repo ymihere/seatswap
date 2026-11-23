@@ -244,7 +244,7 @@ mod tests {
 
     use chrono::{Duration, FixedOffset};
 
-    use crate::burn::plan::testkit::{crowded, inputs, now, offset, EPS};
+    use crate::burn::plan::testkit::{inputs, narrow, now, offset, EPS};
     use crate::history::{LimitSample, Source, TokenRecord};
     use crate::project::ProjectKey;
     use crate::stats::tests::append_codex_records;
@@ -366,27 +366,24 @@ mod tests {
 
     #[test]
     fn replay_lazy_and_eager_differ_as_in_the_model() {
-        // The crowded setup: AC and LB reset together on Wednesday, and the
-        // eager plan starts on them at once.
-        let inputs = crowded();
+        // The narrow setup with AC and LB at 30 %: a replay starts on the
+        // account with the least slack, AC, and the eager plan moves between
+        // AC and LB's narrow windows more often than the lazy one. Neither
+        // blocks work; here the extra moves leave 1 % of a week unused.
+        let mut inputs = narrow();
+        inputs.accounts[1].week_percent = 30.0;
+        inputs.accounts[2].week_percent = 30.0;
         let (_dir, history, rates, range) = setup_from(inputs);
         let lazy = replay(&history, &range, &rates, &[], Policy::Lazy, &prices()).expect("replay");
         let eager =
             replay(&history, &range, &rates, &[], Policy::Eager, &prices()).expect("replay");
 
-        // Within the recorded week neither blocks work, but the lazy plan
-        // leaves 4 % of PR unused at its Saturday reset, the eager plan 2 %,
-        // with many more switches.
         assert!(lazy.blocked_usd.abs() < EPS, "{}", lazy.blocked_usd);
         assert!(eager.blocked_usd.abs() < EPS, "{}", eager.blocked_usd);
-        let pr = account_ref("PR");
-        assert!((lazy.expired[&pr] - 4.0).abs() < EPS, "{:?}", lazy.expired);
-        assert!(
-            (eager.expired[&pr] - 2.0).abs() < EPS,
-            "{:?}",
-            eager.expired
-        );
-        assert_eq!((lazy.switches, eager.switches), (11, 27));
+        let expired = |result: &ReplayResult| result.expired.values().sum::<f64>();
+        assert!(expired(&lazy).abs() < EPS, "{:?}", lazy.expired);
+        assert!((expired(&eager) - 1.0).abs() < EPS, "{:?}", eager.expired);
+        assert_eq!((lazy.switches, eager.switches), (32, 34));
         for result in [&lazy, &eager] {
             let worked = result.worked_usd + result.blocked_usd;
             assert!((worked - 92.0).abs() < EPS, "{worked}");

@@ -31,12 +31,20 @@ pub use write::{closed_windows, sample_of, Recorder};
 /// One history read that keeps its records and adds its warnings to `warnings`
 /// (spec §1.2). The statistics pages and [`crate::money::Valuer::build`] go
 /// through it, so a torn line or an unknown shape is named and not dropped.
+/// A warning already in `warnings` is not added again: a page that reads the
+/// same files twice names each warning once.
 pub(crate) fn keep_warnings<R: Record>(
     warnings: &RefCell<Vec<String>>,
     read: impl FnOnce() -> Result<Read<R>, HistoryError>,
 ) -> Result<Read<R>, HistoryError> {
     let read = read()?;
-    warnings.borrow_mut().extend(read.warnings.iter().cloned());
+    let mut shown = warnings.borrow_mut();
+    for warning in &read.warnings {
+        if !shown.contains(warning) {
+            shown.push(warning.clone());
+        }
+    }
+    drop(shown);
     Ok(read)
 }
 

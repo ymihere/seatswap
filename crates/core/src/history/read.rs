@@ -19,7 +19,7 @@ use serde::Serialize;
 use super::carry::merge_folder;
 use super::{
     read_marker, same_reset, AccountRef, Event, HistoryDir, HistoryError, Kind, Record, Sample,
-    SessionRecord, TokenRecord, UpRecord, WindowRecord, SESSIONS_NOW_FILE,
+    SessionRecord, TokenRecord, UpRecord, WindowRecord, RESET_JITTER, SESSIONS_NOW_FILE,
 };
 use crate::api::LimitKind;
 use crate::paths;
@@ -163,10 +163,12 @@ impl HistoryDir {
         hosts: &Hosts,
     ) -> Result<Read<WindowRecord>, HistoryError> {
         let read = self.read::<WindowRecord>(range, hosts)?;
-        Ok(Read {
-            records: finished_of(read.records),
-            warnings: read.warnings,
-        })
+        let mut warnings = read.warnings;
+        let (records, went_on) = finished_of(read.records);
+        if went_on > 0 {
+            warnings.push(went_on_warning(went_on));
+        }
+        Ok(Read { records, warnings })
     }
 
     /// The Claude windows of the range: [`finished_windows`] with the Codex
@@ -201,12 +203,30 @@ impl HistoryDir {
     }
 }
 
+/// The page warning for `count` window records [`finished_of`] left out
+/// because a later reading shows their window went on.
+fn went_on_warning(count: usize) -> String {
+    format!(
+        "{count} window records were left out: a later reading of the same limit \
+         shows each window went on past its end (seatswap 1.5.2 and earlier wrote \
+         one for every moved reset time of an unused Codex limit)"
+    )
+}
+
 /// The finished windows of a window read: one per window, the record with the
 /// latest `last_sample`; on a tie the host name that sorts first wins. Sorted
 /// by end, then account. Two records are one window when [`same_window`] says
 /// so. The kept record's `start` and `from` are that host's own: the host that
 /// saw the window longest also saw where it began.
-fn finished_of(mut records: Vec<Hosted<WindowRecord>>) -> Vec<Hosted<WindowRecord>> {
+///
+/// An ordinary record is left out when the next window of the same account,
+/// kind and model (by end) ends more than [`RESET_JITTER`] after it but was
+/// read more than [`RESET_JITTER`] before its end: that reading saw the limit
+/// still running, so the window had not ended. A recorded `start` is no proof
+/// either way: it is the end less the window's length, and a provider that
+/// moves its reset day makes two real windows overlap by it. Returns the
+/// windows and how many records were left out this way.
+fn finished_of(mut records: Vec<Hosted<WindowRecord>>) -> (Vec<Hosted<WindowRecord>>, usize) {
     let mut windows: Vec<Hosted<WindowRecord>> = Vec::new();
     // The kept windows of each account, kind and model, by their place in
     // `windows`: only those can be the same window ([`same_window`]), so a
@@ -246,7 +266,27 @@ fn finished_of(mut records: Vec<Hosted<WindowRecord>>) -> Vec<Hosted<WindowRecor
             .cmp(&b.record.end)
             .then_with(|| a.record.account.cmp(&b.record.account))
     });
-    windows
+    let jitter = chrono::Duration::seconds(RESET_JITTER);
+    let mut next_of_limit: HashMap<(&AccountRef, &LimitKind, &Option<String>), &WindowRecord> =
+        HashMap::new();
+    let mut went_on = vec![false; windows.len()];
+    for (index, hosted) in windows.iter().enumerate().rev() {
+        let record = &hosted.record;
+        let key = (&record.account, &record.k, &record.m);
+        if let Some(next) = next_of_limit.get(&key) {
+            went_on[index] = !record.reset
+                && next.end > record.end + jitter
+                && next.last_sample < record.end - jitter;
+        }
+        next_of_limit.insert(key, record);
+    }
+    let left_out = went_on.iter().filter(|&&out| out).count();
+    let kept = windows
+        .into_iter()
+        .zip(went_on)
+        .filter_map(|(hosted, out)| (!out).then_some(hosted))
+        .collect();
+    (kept, left_out)
 }
 
 /// Whether two window records are the same window: the same account, kind and
@@ -1362,6 +1402,72 @@ mod tests {
         );
     }
 
+    /// The records seatswap 1.5.2 wrote for an unused Codex limit: one per
+    /// poll, each ending five hours after its only reading, the next read
+    /// minutes later. Only the chain's last record stays (no later reading saw
+    /// it running), and so do the windows after it and one of another kind.
+    #[test]
+    fn records_of_a_window_that_went_on_are_left_out_and_counted() {
+        let first = utc("2026-11-16T09:08:21Z");
+        let session = |last_sample: DateTime<Utc>, end: DateTime<Utc>| Hosted {
+            host: "atlas".to_string(),
+            record: WindowRecord {
+                account: account(),
+                k: LimitKind::Session,
+                m: None,
+                start: Some(end - Duration::hours(5)),
+                end,
+                final_percent: 0.0,
+                lost: None,
+                last_sample,
+                plan: Some("Plus".to_string()),
+                uncertain: true,
+                reset: false,
+                from: None,
+            },
+        };
+        let mut records: Vec<Hosted<WindowRecord>> = (0..6)
+            .map(|poll| {
+                let at = first + Duration::minutes(5 * poll);
+                session(at, at + Duration::hours(5))
+            })
+            .collect();
+        let chain_end = first + Duration::minutes(25) + Duration::hours(5);
+        // The window after them begins where the overlapping one ends.
+        let after = session(
+            chain_end + Duration::hours(5),
+            chain_end + Duration::hours(6),
+        );
+        records.push(after.clone());
+        let mut weekly = session(first + Duration::minutes(3), first + Duration::days(2));
+        weekly.record.k = LimitKind::WeeklyAll;
+        records.push(weekly.clone());
+
+        // A window whose recorded start lies before the chain's end but which
+        // was read only after it: a start is the end less the window's length,
+        // no reading, so the chain's last record stays.
+        let overlapping = session(
+            chain_end + Duration::minutes(2),
+            chain_end + Duration::hours(1),
+        );
+        records.push(overlapping.clone());
+
+        let (kept, left_out) = finished_of(records);
+
+        assert_eq!(left_out, 5);
+        let ends: Vec<DateTime<Utc>> = kept.iter().map(|hosted| hosted.record.end).collect();
+        assert_eq!(
+            ends,
+            vec![
+                chain_end,
+                overlapping.record.end,
+                after.record.end,
+                weekly.record.end
+            ]
+        );
+        assert!(went_on_warning(left_out).starts_with("5 window records were left out"));
+    }
+
     /// Two windows of one account that end at the same moment, one per kind:
     /// the finished windows keep the order they were read in.
     #[test]
@@ -1392,6 +1498,7 @@ mod tests {
         ];
 
         let kinds: Vec<(LimitKind, String)> = finished_of(records)
+            .0
             .into_iter()
             .map(|hosted| (hosted.record.k, hosted.host))
             .collect();

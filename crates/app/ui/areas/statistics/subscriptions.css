@@ -88,7 +88,8 @@
 }
 
 .stats-sub-size-row {
-  grid-template-columns: 30px minmax(0, 1fr) 150px 84px;
+  grid-template-columns: 30px minmax(0, 1fr) auto 84px;
+  column-gap: 8px;
   height: 22px;
 }
 
@@ -97,6 +98,12 @@
   align-items: center;
   gap: 2px;
   min-width: 0;
+}
+
+/* The plan's name is the point of the line: it is not cut while the row has
+   room for it. */
+.stats-sub-size-text .stats-plan {
+  flex: none;
 }
 
 .stats-sub-size-name {

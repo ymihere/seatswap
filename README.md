@@ -314,9 +314,13 @@ builder edits.
   notification say what it would do, with a Switch button.
 - It never leaves the active account blocked while another one is usable; when the active account
   is blocked and every account is full, it says when the next one resets.
+- It leaves an account at 95 % of its 5 h window when another account's window has room: the
+  window holds no quota of its own, and the usage figure trails the real use by a few minutes. With
+  no such account it stays and uses the window up to 100 %.
 - It switches before an account is full to an account at risk of losing quota at its weekly reset:
-  one that needs nearly all the working hours left before that reset to use its quota up (8 typical
-  working hours or less to spare, since the machines may be off). It goes back to such an account
+  one that needs nearly all the working hours left before that reset to use its quota up, alone or
+  together with the accounts that reset before it (8 typical working hours or less to spare, since
+  the machines may be off). It goes back to such an account
   as soon as its 5 h window resets. Other early switches come only after it has measured the
   accounts' rates and what a switch costs, and only when one is expected to save at least 0.5
   working hours and twice its extra switches' cost.

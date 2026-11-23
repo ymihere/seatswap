@@ -101,6 +101,10 @@ pub struct PlanRow {
     /// `None` exactly when `full_hours` is.
     pub full_tokens: Option<f64>,
     pub trend: Option<Change>,
+    /// Why `trend` cannot tell a change ([`too_few_for_change`]): too few
+    /// points in the range, so the page says so rather than "steady". `None`
+    /// when the points are enough, or the row has no points at all.
+    pub trend_missing: Option<String>,
     pub basis_hours: Option<f64>,
     pub thin: bool,
     /// Why the row has no models, no basis and no cells; `None` when it has
@@ -177,6 +181,9 @@ pub struct PerPercent {
     pub model: String,
     pub points: Vec<Point>,
     pub change: Option<Change>,
+    /// Why `change` cannot be told ([`too_few_for_change`]); `None` when the
+    /// points are enough or there are none.
+    pub change_missing: Option<String>,
     pub now: Vec<Now>,
     /// Minutes of actual work 1 % of this limit holds ([`WorkedHour`]); `None`
     /// when no hour of the last 4 weeks holds priced work of the company.
@@ -648,6 +655,7 @@ pub(crate) fn subscriptions_in<Tz: TimeZone + Copy>(
             full_hours,
             full_tokens,
             trend: if usable { trend.clone() } else { None },
+            trend_missing: too_few_for_change(main_points.len(), period_word(subject.company)),
             basis_hours,
             thin: learned_rates.is_some_and(|rates| is_thin(&rates.c)),
             missing,
@@ -694,6 +702,7 @@ pub(crate) fn subscriptions_in<Tz: TimeZone + Copy>(
                         model: model.to_string(),
                         points: session.iter().map(|point| point.point.clone()).collect(),
                         change: change_of(&session, model, main_upt),
+                        change_missing: too_few_for_change(session.len(), "weeks"),
                         now: now_of(
                             subject,
                             owner_model_stats,
@@ -1025,6 +1034,25 @@ fn push_point(
     });
 }
 
+/// Why a line of `points` points cannot tell a change: [`change_of`] needs
+/// [`POINTS_BEFORE_CHANGE`] + 2 of them, so with fewer the line is not
+/// "steady", it is too short. `None` with enough points, and with none (the
+/// page says "no finished week" then). `period` is the points' unit, plural.
+fn too_few_for_change(points: usize, period: &str) -> Option<String> {
+    let needed = POINTS_BEFORE_CHANGE + 2;
+    (points > 0 && points < needed)
+        .then(|| format!("too few {period} to tell a change: {points} of the {needed} it needs"))
+}
+
+/// The unit of a subscription's points: Ollama counts months, the others
+/// weeks.
+fn period_word(company: Company) -> &'static str {
+    match company {
+        Company::Ollama => "months",
+        Company::Anthropic | Company::OpenAI => "weeks",
+    }
+}
+
 fn change_of(points: &[ChangePoint], model: &str, upt: Option<f64>) -> Option<Change> {
     let upt = upt?;
     if points.len() < POINTS_BEFORE_CHANGE + 2 {
@@ -1138,6 +1166,7 @@ fn per_percent_row(
         model: model.to_string(),
         points: points.iter().map(|point| point.point.clone()).collect(),
         change,
+        change_missing: too_few_for_change(points.len(), period_word(subject.company)),
         now: now_of(subject, stats, company_models, factor.value),
         minutes: percent_minutes(factor, worked),
         // Only the 5 h line holds a window (decision 7 of M-2's fix).
@@ -2397,6 +2426,7 @@ mod tests {
         assert_eq!((row.full_hours, row.full_tokens), (None, None));
         assert_eq!(row.basis_hours, None);
         assert_eq!(row.trend, None);
+        assert_eq!(row.trend_missing, None);
         let week_row = page
             .tokens_week
             .rows
@@ -2759,6 +2789,16 @@ mod tests {
         assert_eq!(week.window_holds_minutes, None);
         assert_eq!(week.model, "claude-opus-5-5");
         assert_eq!(week.points.len(), expected.len());
+        assert_eq!(week.points.len(), expected.len());
+        let needed = POINTS_BEFORE_CHANGE + 2;
+        let missing = (week.points.len() < needed).then(|| {
+            format!(
+                "too few weeks to tell a change: {} of the {needed} it needs",
+                week.points.len()
+            )
+        });
+        assert_eq!(plan.trend_missing, missing);
+        assert_eq!(week.change_missing, missing);
         for point in &week.points {
             let (_, value) = expected
                 .iter()

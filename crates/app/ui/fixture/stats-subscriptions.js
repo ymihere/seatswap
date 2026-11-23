@@ -211,6 +211,7 @@ function planRows() {
             after: 1.02e6,
           }
         : null,
+    trendMissing: row.abbr === "PR" ? "too few weeks to tell a change: 7 of the 10 it needs" : null,
     basisHours: row.workHours,
     thin: row.workHours !== null && row.workHours < 40,
     missing: row.abbr === "O2" ? NOT_MEASURED : null,
@@ -475,6 +476,7 @@ function perPercentRows() {
       model: MODELS.opus,
       points: weekPoints(prWeek, [0.12, 0.12, 0.12, 0.12, 0.12, 0.12, 0.25]),
       change: null,
+      changeMissing: "too few weeks to tell a change: 7 of the 10 it needs",
       minutes: percentMinutes("anthropic", 3.2e6),
       now: [
         ...nowRow(MODELS.opus, 3.2e6),
