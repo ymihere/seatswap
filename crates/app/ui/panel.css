@@ -504,6 +504,15 @@ input[type="checkbox"] {
   opacity: 1;
 }
 
+/* The time left until the weekly reset, after the account's name. */
+.card-week-left {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .card-label {
   min-width: 0;
   font-size: 13px;

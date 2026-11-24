@@ -254,6 +254,15 @@ pub(crate) fn compact_left(seconds: i64, week: bool) -> String {
     }
 }
 
+/// The time left until `at` as the pop-up's card header and the auto-burn line
+/// write it: [`compact_left`] in days and hours from a day on (`3d 2h`), else
+/// in hours and minutes (`14h 3min`).
+#[cfg(feature = "gui")]
+pub(crate) fn time_left(at: DateTime<Utc>, now: DateTime<Utc>) -> String {
+    let seconds = (at - now).num_seconds();
+    compact_left(seconds, seconds >= 24 * 60 * 60)
+}
+
 /// The waybar/i3blocks class name of a load level (§7.3).
 pub(crate) fn class_name(level: Option<LoadLevel>) -> &'static str {
     match level {

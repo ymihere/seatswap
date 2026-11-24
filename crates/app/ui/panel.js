@@ -116,10 +116,19 @@ function viewIsActive(view) {
   return isActiveView(view, state.snapshot);
 }
 
-// The active account is the bottom card; the others keep the list order.
+// The active account is the bottom card. Above it the others stand by their
+// weekly reset, the one whose week expires next on top; an account without a
+// weekly reset follows them, and equal resets keep the list order.
 function orderedViews(views) {
+  const resetMs = (view) => {
+    const week = findLimit(view, "weekly_all");
+    const ms = week && week.resetsAt ? Date.parse(week.resetsAt) : NaN;
+    return Number.isFinite(ms) ? ms : Infinity;
+  };
   return (Array.isArray(views) ? views.slice() : []).sort(
-    (a, b) => Number(viewIsActive(a)) - Number(viewIsActive(b))
+    (a, b) =>
+      Number(viewIsActive(a)) - Number(viewIsActive(b)) ||
+      (resetMs(a) === resetMs(b) ? 0 : resetMs(a) < resetMs(b) ? -1 : 1)
   );
 }
 
@@ -871,11 +880,21 @@ function renderCard(view, index) {
     status.push(button("Switch", "small", switchHere));
   }
 
+  // The time left until the weekly reset, as the status line writes it.
+  const week = findLimit(view, "weekly_all");
+  const extra = [pencil];
+  if (week && week.resetsAt && view.loginState !== "loggedOut") {
+    extra.unshift(
+      h("span", { class: "card-week-left", title: "until the weekly reset" }, [
+        timeNode(week.resetsAt, "left"),
+      ])
+    );
+  }
   main.appendChild(
     renderCardTop({
       chip: badge,
       label: view.label || "Unnamed account",
-      extra: [pencil],
+      extra,
       status,
     })
   );

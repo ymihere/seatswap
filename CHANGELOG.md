@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [1.5.4] - 2026-11-24
+
+### Changed
+
+- The pop-up orders the accounts by their weekly reset: the week that expires next stands on top,
+  the active account stays at the bottom. Keys 1–9 follow the new order.
+- Each card's header shows the time left until the account's weekly reset after its name, in the
+  status line's compact form (`3d 2h`, `14h 3min`).
+
 ## [1.5.3] - 2026-11-23
 
 ### Changed
@@ -740,7 +749,8 @@ All notable changes to this project are documented here. The format follows
   starts later): it says so and shows the icon as soon as a tray appears; `seatswap panel` opens
   the pop-up meanwhile.
 
-[Unreleased]: https://github.com/ymihere/seatswap/compare/v1.5.3...HEAD
+[Unreleased]: https://github.com/ymihere/seatswap/compare/v1.5.4...HEAD
+[1.5.4]: https://github.com/ymihere/seatswap/compare/v1.5.3...v1.5.4
 [1.5.3]: https://github.com/ymihere/seatswap/compare/v1.5.2...v1.5.3
 [1.5.2]: https://github.com/ymihere/seatswap/compare/v1.5.1...v1.5.2
 [1.5.1]: https://github.com/ymihere/seatswap/compare/v1.5.0...v1.5.1

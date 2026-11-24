@@ -331,7 +331,6 @@ pub fn line(
             let Some(next_id) = next.account.as_deref() else {
                 return Ok(None);
             };
-            let seconds = next.from.signed_duration_since(now).num_seconds();
             // A plan that fills the current account only after the next one is
             // due leaves it before it is full (an eager plan can do that): the
             // line then says so instead of claiming it stays until full.
@@ -345,7 +344,7 @@ pub fn line(
                     account_part(views, current)?,
                     BurnPart::Text(format!(
                         " for about {}. Then ",
-                        format::compact_left(seconds, seconds >= 24 * 60 * 60)
+                        format::time_left(next.from, now)
                     )),
                     account_part(views, next_id)?,
                     BurnPart::Text(", before ".to_string()),
@@ -368,7 +367,7 @@ pub fn line(
                 account_part(views, current)?,
                 BurnPart::Text(format!(
                     " until its {limit} is full, about {}. Then ",
-                    format::compact_left(seconds, seconds >= 24 * 60 * 60)
+                    format::time_left(next.from, now)
                 )),
                 account_part(views, next_id)?,
                 BurnPart::Text(".".to_string()),

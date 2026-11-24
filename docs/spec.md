@@ -2,7 +2,7 @@
 name: seatswap — specification
 status: Draft
 created: 2026-11-10
-updated: 2026-11-16
+updated: 2026-11-24
 tags: [seatswap, spec, claude-code, tray, linux, macos, windows]
 ---
 
@@ -1300,7 +1300,9 @@ The target is somewhere between the macOS Control Centre and Raycast: one floati
   - Colours follow §7.3, drawn as a soft gradient along the arc, with a faint glow on the red state.
   - Clicking the gauge of an account that is not in use switches to it, like its Switch button. The pointer becomes a hand over it.
 - **Account colour:** a 3 px accent bar on the card's left edge and the abbreviation badge.
-- **Active account:** at the bottom. The card is raised (slightly lighter), with a subtle ring in the account colour and an "Active" pill.
+- **Order:** the active account at the bottom. Above it the other accounts stand by their weekly reset, the week that expires next on top; an account without a weekly reset follows them, and equal resets keep the list order. The provider cards keep their own section.
+- **Active account:** the card is raised (slightly lighter), with a subtle ring in the account colour and an "Active" pill.
+- **Card header:** the badge, the account's name, and after it, muted and small, the time left until the weekly reset in the status line's compact form (`3d 2h`, `14h 3min`, `35min`; tooltip "until the weekly reset"). A logged-out account and one without a weekly reset show none.
 - **Closing:** Esc, the × in the header, a click anywhere else (the pop-up loses focus), or a second left click on the tray icon. The pop-up must actually get the keyboard focus when it opens, or none of the first three work (on Cinnamon it did not at first, §17).
 - **Motion:** after a switch, the cards trade places with a 250 ms spring animation. The ticking reset countdowns ("1h 12min") update every minute without flicker. All animation is off when the system asks for reduced motion.
 - **Keyboard:** ↑/↓ moves between accounts, Enter switches, 1–9 switch directly, `,` opens the settings in the large window, Esc closes. The cursor (a blue ring) appears only with the first ↑/↓, starting from the account in use, and is gone again each time the pop-up opens; until then Enter does nothing. Clicking a card does not move it.

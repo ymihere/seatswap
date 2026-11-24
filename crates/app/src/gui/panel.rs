@@ -1278,7 +1278,9 @@ pub(crate) fn icon_preview(abbr: String, color: String) -> Result<Vec<IconPx>, S
 /// last six days as `Thu 09:41`, and older as `13 Nov 09:41`, `age` of a poll
 /// or a usage fetch (`format_age`), `day` for a looked-up value's time in local
 /// time, `date` for a calendar date without a time zone conversion (`13 Nov`),
-/// and `dayYear` for the local calendar day and year (`17 Aug 2026`).
+/// `dayYear` for the local calendar day and year (`17 Aug 2026`), and `left`
+/// for the time left until it in the status line's compact form (`3d 2h`,
+/// `14h 3min`; `format::time_left`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum TimeStyle {
@@ -1289,6 +1291,7 @@ pub(crate) enum TimeStyle {
     Date,
     DayClock,
     DayYear,
+    Left,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -1318,6 +1321,7 @@ where
             TimeStyle::Date => format::date(time.at),
             TimeStyle::DayClock => format::day_clock(time.at, now, tz),
             TimeStyle::DayYear => format::day_year(time.at, tz),
+            TimeStyle::Left => format::time_left(time.at, now),
         })
         .collect()
 }
@@ -1786,6 +1790,8 @@ mod tests {
             { "at": "2026-11-15T02:00:00Z", "style": "clock" },
             { "at": "2026-11-11T13:34:48Z", "style": "age" },
             { "at": "2026-11-11T13:30:00Z", "style": "age" },
+            { "at": "2026-11-11T14:39:59.591693Z", "style": "left" },
+            { "at": "2026-11-15T02:00:00Z", "style": "left" },
         ]))
         .expect("the panel's request");
         let now = DateTime::parse_from_rfc3339("2026-11-11T13:35:00Z")
@@ -1799,7 +1805,9 @@ mod tests {
                 "Sun 02:00",
                 "Sun 02:00",
                 "12s ago",
-                "5min ago"
+                "5min ago",
+                "1h 5min",
+                "3d 13h"
             ]
         );
     }

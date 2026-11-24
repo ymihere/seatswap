@@ -1585,6 +1585,21 @@ export async function fixtureInvoke(command, args) {
           }
           return `${date.getDate()} ${months[date.getMonth()]}`;
         }
+        if (time.style === "left") {
+          // The time left as `format::time_left`: days and hours from a day on,
+          // else hours and minutes, rounded up.
+          const seconds = (date - new Date()) / 1000;
+          if (seconds <= 0) return "0s";
+          if (seconds >= 86400) {
+            const hours = Math.ceil(seconds / 3600);
+            const days = Math.floor(hours / 24);
+            return hours % 24 === 0 ? `${days}d` : `${days}d ${hours % 24}h`;
+          }
+          const minutes = Math.ceil(seconds / 60);
+          if (minutes < 60) return `${minutes}min`;
+          const rest = minutes % 60;
+          return rest === 0 ? `${Math.floor(minutes / 60)}h` : `${Math.floor(minutes / 60)}h ${rest}min`;
+        }
         if (time.style === "dayYear") {
           // The local calendar day and year, as `TimeStyle::DayYear`.
           return `${date.getDate()} ${months[date.getMonth()]} ${date.getFullYear()}`;
