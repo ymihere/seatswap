@@ -3533,7 +3533,7 @@ function renderCalls(container) {
 function providersCard() {
   return panel(
     "Providers",
-    "read-only cards for OpenAI (Codex), Ollama's cloud plan and the API prices",
+    "read-only cards for OpenAI (Codex), Ollama's cloud plan and Google, and the API prices",
     [
       section("OpenAI (Codex)"),
       setting(
@@ -3556,6 +3556,16 @@ function providersCard() {
         "ollamaCard"
       ),
       textField("ollamaUrl", "Ollama server"),
+      section("Google (Antigravity)"),
+      setting(
+        "Show a Google card",
+        toggle("googleCard", "Show a Google card"),
+        "shown when agy is installed; it offers Connect until agy hands over its usage",
+        "googleCard"
+      ),
+      note(
+        "seatswap asks Google nothing and reads no Google login. agy hands its usage to its status line command; Connect on the Google card sets that command in ~/.gemini/antigravity-cli/settings.json (backed up first) and never replaces a status line you set yourself. The numbers move only while agy runs."
+      ),
       // The model list moved here from General (decision 7): read-only.
       section("API prices"),
       priceBlock(),

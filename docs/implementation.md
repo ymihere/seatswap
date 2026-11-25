@@ -5266,11 +5266,58 @@ cloud plan` and two sections:
 - **Ollama**: `Show an Ollama card` (toggle `ollamaCard`, note `asks the Ollama server on this machine
   for your cloud balance every 5 minutes`) and `Ollama server` (text field `ollamaUrl`).
 
+- **Google (Antigravity)**: `Show a Google card` (toggle `googleCard`) and the note that Connect on the
+  card sets agy's `statusLine` and never replaces one the person set.
+
 The fields save through the settings page's one writer; the backend's `Settings::validate` refuses a
 relative `codexHome` or a bad `ollamaUrl` and the page shows that text under the row and puts the
 control back. After every successful save the worker calls `ProvidersClient::settings_saved`, which
 is what makes a newly switched-on card or a changed folder/URL poll at once. The pop-up calls
 `ProvidersClient::opened` when it opens (`panel.rs`), which is the 60 s rule above.
+
+## google — the numbers `agy` hands to the status line (spec §7.9)
+
+```rust
+// core::providers::google
+pub struct GoogleBucket { pub id: String, pub percent: Option<f64>,
+    pub resets_at: Option<DateTime<Utc>>, pub problem: Option<String> }
+pub struct GoogleFeed { pub at: DateTime<Utc>, pub email: String, pub plan: Option<String>,
+    pub buckets: Vec<GoogleBucket> }                       // <data>/google.json
+pub struct GoogleReading { pub reading: ProviderReading, pub at: DateTime<Utc>, pub notes: Vec<String> }
+pub fn is_payload(raw: &Value) -> bool;
+pub fn feed_from_payload(raw: &Value, now: DateTime<Utc>) -> Option<GoogleFeed>;
+pub fn write_if_due(app: &AppPaths, feed: &GoogleFeed) -> io::Result<bool>;
+pub fn read(app: &AppPaths, now: DateTime<Utc>) -> Result<Option<GoogleReading>, ProviderError>;
+pub fn reading(feed: GoogleFeed, now: DateTime<Utc>) -> GoogleReading;
+pub fn limit_name(kind: &LimitKind) -> &str;
+pub struct Agy { pub paths: AgyPaths, pub program: PathBuf }   // program: the console seatswap
+pub enum AgyLink { NotInstalled, NotConnected, Connected, Other(String) }
+pub fn agy_status_line(program: &Path) -> Result<Value, ProviderError>;
+pub fn agy_link(agy: &Agy) -> Result<AgyLink, ProviderError>;
+pub fn connect_agy(agy: &Agy) -> Result<(), ProviderError>;   // refuses NotInstalled and Other
+// core::paths
+pub struct AgyPaths { pub dir: PathBuf }                    // ~/.gemini/antigravity-cli
+impl AgyPaths { pub fn resolve() -> Result<AgyPaths, PathsError>; pub fn at(dir: &Path) -> AgyPaths;
+    pub fn settings_file(&self) -> PathBuf; }
+// core::claude_settings: the one statusLine reader and writer, for Claude Code's and agy's file
+pub fn status_line_in(path: &Path) -> Result<Option<Value>, ClaudeSettingsError>;
+pub fn set_status_line_in(path: &Path, value: Option<&Value>) -> Result<Option<Value>, ClaudeSettingsError>;
+pub fn status_line_command(exe: &Path) -> Result<String, ClaudeSettingsError>;
+// core::feed: the one write and read rule of a status line's file
+pub(crate) fn write_file_if_due<T>(app, path, value: &T, at, stored_state) -> io::Result<bool>;
+pub(crate) fn read_file<T>(path: &Path) -> io::Result<Option<T>>;
+// app::statusline: None when the payload is not agy's
+pub(crate) fn google_line(app, settings, payload, now) -> Result<Option<String>, String>;
+```
+
+`cli::statusline_line` asks `google_line` first. The provider thread's third provider reads the file at
+each round and when the pop-up opens; `ProviderView` carries `email` and `notes` for it, and `fetchedAt`
+is the time `agy` said the numbers. `found` is always false for it: nothing is recorded. Without the file
+it asks `agy_link` (the runtime holds `agy: Result<Agy, String>`, built once by
+`providers_rt::real_agy`; tests pass an `Agy` in their tempdir) and `ProviderView.can_connect` tells
+the pop-up to show **Connect agy**. The pop-up's `connect_agy` command goes through the action thread
+(`ActionCommand::ConnectAgy`), which calls `google::connect_agy` and then
+`ProvidersClient::changed(Provider::Google)`; Codex's switch uses the same `changed(Provider::Codex)`.
 
 ## Step E: the Harness, Codex sessions and durations (1.2.0)
 

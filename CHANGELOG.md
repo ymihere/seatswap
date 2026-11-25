@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+## [1.5.5] - 2026-11-25
+
+### Added
+
+- A Google card in the pop-up: plan, 5h and weekly limits of the account the Antigravity CLI (`agy`) is
+  signed in to. When `agy` is installed but not connected, the card offers **Connect agy**, which sets
+  `agy`'s status line to `seatswap statusline` (backed up first; a status line of your own is never
+  replaced). Display only: seatswap asks Google nothing and reads no Google login.
+
 ## [1.5.4] - 2026-11-24
 
 ### Changed
@@ -749,7 +760,8 @@ All notable changes to this project are documented here. The format follows
   starts later): it says so and shows the icon as soon as a tray appears; `seatswap panel` opens
   the pop-up meanwhile.
 
-[Unreleased]: https://github.com/ymihere/seatswap/compare/v1.5.4...HEAD
+[Unreleased]: https://github.com/ymihere/seatswap/compare/v1.5.5...HEAD
+[1.5.5]: https://github.com/ymihere/seatswap/compare/v1.5.4...v1.5.5
 [1.5.4]: https://github.com/ymihere/seatswap/compare/v1.5.3...v1.5.4
 [1.5.3]: https://github.com/ymihere/seatswap/compare/v1.5.2...v1.5.3
 [1.5.2]: https://github.com/ymihere/seatswap/compare/v1.5.1...v1.5.2

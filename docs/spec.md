@@ -2,7 +2,7 @@
 name: seatswap — specification
 status: Draft
 created: 2026-11-10
-updated: 2026-11-24
+updated: 2026-11-25
 tags: [seatswap, spec, claude-code, tray, linux, macos, windows]
 ---
 
@@ -874,7 +874,7 @@ few seconds. With auto-burn on, `seatswap next` called by an agent prints
 `seatswap: auto-burn is on and decides` and exits 0 without switching or touching a login; the
 agent call itself is recorded as usual. A person's `next` still switches.
 
-### 7.9 Other companies: OpenAI and Ollama
+### 7.9 Other companies: OpenAI, Ollama and Google
 
 seatswap shows three companies: **Anthropic** (Claude's plans), **OpenAI** (Codex) and **Ollama**
 (DeepSeek Harness and flash workers on Ollama's cloud). "Codex" is only the tool's name: the card
@@ -1029,6 +1029,46 @@ is asked there.
 - The account is named `ollama` under the organization `ollama`; the plan is empty.
 - Every successful `/api/usage?range=24h` answer's `buckets` also become the history's Ollama hours (§5); the Activity page names in one note how much they counted beyond the known sessions (§11.4).
 
+**Google.** Display only. Google's terms forbid third-party software that uses the Antigravity login,
+and its FAQ does not support automated account rotation on consumer plans. So seatswap asks Google
+nothing, reads no Google login, and neither saves nor switches one. The Antigravity CLI (`agy`) hands
+its own numbers to a status line command; that command is `seatswap statusline`, set in
+`~/.gemini/antigravity-cli/settings.json` as
+`"statusLine": {"type": "command", "command": "\"<console seatswap program>\" statusline", "stack_with_default": true}`
+(the path quoted as Claude Code's status line quotes it, §11.4, "The Status line area"). seatswap writes it only when the person
+clicks **Connect agy** on the card (below), through the same writer as Claude Code's status line: the file
+is backed up once, every other key keeps its value and place, and a missing file is created holding only
+this key. A `statusLine` that runs another command is never replaced: Connect is refused with the
+sentence `agy's status line already runs {command}; seatswap does not replace it. To connect, set it to
+"seatswap statusline" in {path}.`
+A payload whose `product` is `antigravity` is agy's: it touches neither the feed nor the recorded keys,
+and the line printed for `agy` is the plan and each limit, `Google Pro · 5h 60% · week 6%` (empty
+without an account). With an `email` and a non-empty `quota`, and while `googleCard` is on, the numbers
+go to `<data>/google.json` under the feed's write rule. The percent is `100 × (1 − remaining_fraction)`,
+the reset is `reset_time`. `gemini-5h` is the session and `gemini-weekly` the week; `3p-5h` and
+`3p-weekly` are `5h Claude/GPT` and `week Claude/GPT`; any other bucket keeps its id as its name. Of these
+only `gemini-weekly` is in Google's documentation; the other three come from another tool and were not
+checked against a real payload.
+
+**Before the first reading.** While `google.json` does not exist, the card follows `agy` itself, read
+at every round and when the pop-up opens: with no folder `~/.gemini/antigravity-cli` there is no card;
+installed with no `statusLine`, the card says `agy is installed but does not send its usage to seatswap
+yet.` and offers **Connect agy**; with seatswap's status line it says `agy is connected. Its usage
+arrives while agy runs; restart agy sessions that were open before.`; with another command it names
+that command (`agy's status line runs {command}, and no reading has come from it yet. seatswap gets
+agy's usage only when that command is seatswap statusline.`) and offers nothing. A settings file that
+cannot be read is the card's error with its path. After a successful Connect the provider thread reads
+Google at once; a refusal shows in the card until the next click. `agy` names no variable that moves its
+folder, so seatswap looks only in the home folder; where `agy` keeps it on Windows and macOS was not
+checked.
+
+The card shows once that file exists: the email, the plan, the limits and the age of the reading. A
+window whose reset has passed is no row but the note `{name} was reset since the last reading`; a bucket
+that cannot be read or is disabled is the note `{id} not read: {reason}`. The numbers move only while
+`agy` runs interactively (headless `agy -p` runs no status line), and the file holds one account, the
+last one signed in. A Google reading is not recorded in the history, is no subscription and counts in
+no statistics.
+
 **What the card shows.** One card per switched-on provider, Codex first. A Codex card has the
 account card's rings and bars, the plan and a row per limit with its reset and its own name; a
 per-model limit of another length is labelled `{model} · {name}`, for example
@@ -1089,8 +1129,8 @@ because the export has no sample rows. An import copies a host folder as it is, 
 included. A history folder that could not be opened at start is already the snapshot's error and was
 notified there; the provider thread records nothing and reports nothing a second time.
 
-**Settings.** The four settings are in the settings table (§10) and in Settings → Providers:
-`codexCard` and `ollamaCard` default off, `codexHome` is empty unless set, and `ollamaUrl` defaults to
+**Settings.** The five settings are in the settings table (§10) and in Settings → Providers:
+`codexCard` and `ollamaCard` default off, `googleCard` on (its card needs an account first), `codexHome` is empty unless set, and `ollamaUrl` defaults to
 `http://127.0.0.1:11434`. `codexHome` must be an absolute folder when set. `ollamaUrl` must start with
 `http://` or `https://` and name a host: a DNS name (dot-separated labels of letters, digits and inner
 hyphens), an IPv4 address or a bracketed IPv6 address. A whitespace or control character, user info
@@ -1262,6 +1302,7 @@ They give real click handling and exact placement on those desktops. They're not
 | `codexHome` | none | `null` or an absolute folder: where Codex's `auth.json` and `sessions/` are; `null` means `$CODEX_HOME`, else `~/.codex`. A relative folder is refused. Settings → Providers, "Codex folder" (§7.9) |
 | `ollamaCard` | off | `bool`; show a read-only Ollama card. While off, there is no card, but Ollama is still polled when the `ollama` program is found or this host stores an Ollama subscription (§7.9). Settings → Providers, "Show an Ollama card" |
 | `ollamaUrl` | `"http://127.0.0.1:11434"` | the Ollama server the card asks; must start with `http://` or `https://` and name a host: a DNS name, an IPv4 address or a bracketed IPv6 address. Refused: a whitespace or control character, user info (without quoting the URL), no such scheme, a host that is not one of those, a query string, a fragment, an empty path segment. A port, a path, an IPv6 host and one trailing `/` are accepted. Settings → Providers, "Ollama server" (§7.9) |
+| `googleCard` | on | `bool`; show a Google card while `agy` is installed: Connect until it hands `seatswap statusline` an account, then its numbers (§7.9). While off, nothing is written and no card shows. Settings → Providers, "Show a Google card" |
 
 Every setting above is edited in the large window's Settings area (§11.4); the last column names the
 group and the row. The pop-up has no settings view any more (§11.3). Settings → General's first line

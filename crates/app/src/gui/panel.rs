@@ -687,6 +687,24 @@ pub(crate) async fn edit_subscription(
     }
 }
 
+/// Connect `agy` from the Google card (spec §7.9): seatswap's status line in
+/// its settings. A refusal (another status line, a broken file) is the error the
+/// card shows.
+#[tauri::command]
+pub(crate) async fn connect_agy(state: State<'_, GuiState>) -> Result<(), String> {
+    let action = state.action.clone();
+    let reply = tauri::async_runtime::spawn_blocking(move || {
+        request(&action, |reply| ActionCommand::ConnectAgy { reply })
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+    match reply {
+        ActionReply::Done => Ok(()),
+        ActionReply::Failed(message) => Err(message),
+        _ => Err("the action thread gave an unexpected reply".to_string()),
+    }
+}
+
 /// Switch Codex's live login to a saved one (R8). The answer is the note the
 /// pop-up shows under the card: it names the sessions still on the old login.
 #[tauri::command]

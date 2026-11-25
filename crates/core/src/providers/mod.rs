@@ -4,7 +4,8 @@
 //! usage. Codex's `auth.json` is read at every poll and the login it holds is
 //! kept in the secrets store; seatswap writes `auth.json` only when switching
 //! between two saved Codex logins, under Codex's own two locks, and it writes no
-//! login it has not saved first. No token is printed or put in an error text.
+//! login it has not saved first. Google is never asked and its login never read:
+//! `agy` hands its numbers to seatswap's status line command. No token is printed or put in an error text.
 
 use std::io;
 use std::path::PathBuf;
@@ -17,12 +18,16 @@ use crate::history::{AccountRef, OllamaHourRecord};
 use crate::locks::LockError;
 
 pub mod codex;
+pub mod google;
 pub mod ollama;
 
 /// The `org` of a Codex [`AccountRef`]; its `acc` is the account id.
 pub const CODEX_ORG: &str = "codex";
 /// The `org` of an Ollama [`AccountRef`]; its `acc` is the same name.
 pub const OLLAMA_ORG: &str = "ollama";
+/// The `org` of a Google [`AccountRef`]; its `acc` is the account's email. A
+/// Google reading is only shown: it is never recorded and no subscription.
+pub const GOOGLE_ORG: &str = "google";
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProviderError {
@@ -70,6 +75,16 @@ pub enum ProviderError {
         #[source]
         source: io::Error,
     },
+    /// `agy`'s settings file could not be read or written (spec §7.9).
+    #[error(transparent)]
+    StatusLine(#[from] crate::claude_settings::ClaudeSettingsError),
+    /// Connect was asked while `agy` is not installed.
+    #[error("agy is not installed here: {dir} does not exist")]
+    NoAgy { dir: PathBuf },
+    /// Connect was asked while `agy`'s status line runs another command; it is
+    /// never replaced.
+    #[error("agy's status line already runs {command}; seatswap does not replace it. To connect, set it to \"seatswap statusline\" in {path}.")]
+    AgyStatusLineTaken { command: String, path: PathBuf },
 }
 
 /// A provider's credit balance, in US dollars.

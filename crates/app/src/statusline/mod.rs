@@ -17,11 +17,13 @@ use seatswap_core::burn::burn_next;
 use seatswap_core::engine::UsageCache;
 use seatswap_core::feed::{self, Feed, FeedLimit};
 use seatswap_core::paths::{self, AppPaths};
+use seatswap_core::providers::google;
 use seatswap_core::store::{Account, AccountsFile, Settings};
 #[cfg(any(feature = "gui", test))]
 use seatswap_core::store::{SegmentKind, StatuslineConfig};
 use seatswap_core::switcher::LiveState;
 
+use crate::format;
 use crate::gui::ipc;
 
 pub(crate) mod render;
@@ -247,6 +249,41 @@ pub(crate) fn publish_feed(
         return Ok(());
     }
     ipc::send_feed(app).map_err(|error| error.to_string())
+}
+
+/// `agy`'s payload (spec §7.9): keep the Google account's numbers in
+/// `google.json` while the Google card is on, and answer with the line `agy`
+/// shows: the plan and each limit's use. `None` when the payload is not `agy`'s.
+/// Without an account the line is empty.
+pub(crate) fn google_line(
+    app: &AppPaths,
+    settings: &Settings,
+    payload: &Payload,
+    now: DateTime<Utc>,
+) -> Result<Option<String>, String> {
+    if !google::is_payload(&payload.raw) {
+        return Ok(None);
+    }
+    let Some(feed) = google::feed_from_payload(&payload.raw, now) else {
+        return Ok(Some(String::new()));
+    };
+    if settings.google_card {
+        google::write_if_due(app, &feed)
+            .map_err(|error| format!("cannot write {}: {error}", app.google_file().display()))?;
+    }
+    let read = google::reading(feed, now);
+    let mut parts = vec![match &read.reading.plan {
+        Some(plan) => format!("Google {plan}"),
+        None => "Google".to_string(),
+    }];
+    for limit in read.reading.usage.iter().flat_map(|usage| &usage.limits) {
+        parts.push(format!(
+            "{} {}",
+            google::limit_name(&limit.kind),
+            format::percent(limit.percent)
+        ));
+    }
+    Ok(Some(parts.join(" · ")))
 }
 
 /// One key path of the payload and the JSON kind of the value found there.

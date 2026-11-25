@@ -339,6 +339,35 @@ impl CodexPaths {
     }
 }
 
+/// The Antigravity CLI's (`agy`) folder, `~/.gemini/antigravity-cli` (spec
+/// §7.9). seatswap only checks that it exists and reads and writes the
+/// `statusLine` key of its `settings.json`, the write only when the person
+/// clicks Connect on the Google card. Tests use [`AgyPaths::at`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgyPaths {
+    pub dir: PathBuf,
+}
+
+impl AgyPaths {
+    /// The folder under the real home. `agy` names no variable that moves it.
+    pub fn resolve() -> Result<AgyPaths, PathsError> {
+        let home = dirs::home_dir().ok_or(PathsError::NoHome)?;
+        Ok(Self::at(&home.join(".gemini").join("antigravity-cli")))
+    }
+
+    /// The files of a given `agy` folder.
+    pub fn at(dir: &Path) -> AgyPaths {
+        AgyPaths {
+            dir: dir.to_path_buf(),
+        }
+    }
+
+    /// `<dir>/settings.json`: where `agy` reads its `statusLine`.
+    pub fn settings_file(&self) -> PathBuf {
+        self.dir.join("settings.json")
+    }
+}
+
 /// The environment variables that place the Harness's sessions folder and
 /// flash-agents' state folder. Only `HarnessPaths::resolve` fills it from the
 /// process environment; tests build one by hand.
@@ -518,6 +547,11 @@ impl AppPaths {
     /// The status line's live numbers, waiting for the tray app (spec §5.3).
     pub fn feed_file(&self) -> PathBuf {
         self.data_dir.join("feed.json")
+    }
+    /// The Google account's numbers as `agy` last handed them to the status line
+    /// command (spec §7.9).
+    pub fn google_file(&self) -> PathBuf {
+        self.data_dir.join("google.json")
     }
     /// The field names and JSON kinds `seatswap statusline` recorded while the
     /// recorder is on (spec §5.4).

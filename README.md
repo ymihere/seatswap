@@ -119,6 +119,12 @@ a running Claude Code session follows has not been tried on a Mac.
   amber or red. Inside the ring the icon shows the account's letters, or with *Settings → General →
   The tray icon shows* the ring's percent (100 % shown as 99, so it stays two digits). The pop-up shows every account's session (5 h) and weekly limits, with the time
   until each one resets — and its plan, such as "Team Premium".
+- **Google card.** Shows the plan, the 5h and weekly limits and their resets of the Google account
+  the Antigravity CLI (`agy`) is signed in to. When `agy` is installed, the card offers **Connect agy**:
+  it sets `agy`'s status line to `seatswap statusline` (the settings file is backed up first, and a
+  status line you set yourself is never replaced). Restart open `agy` sessions; the numbers appear with
+  `agy`'s next status line. Display only: no switching, and the numbers move only while `agy` runs
+  interactively.
 - **OpenAI (Codex) and Ollama cards.** With a switch in *Settings → Providers*, the pop-up shows an
   OpenAI card and an Ollama card. The OpenAI card lists every saved Codex login, marks the live one
   and can switch Codex to another; an inactive login renews itself when its token expires. The
@@ -427,6 +433,9 @@ the tray app, and `seatswap.exe` for everything you want to read in a terminal.
   card on, when the `ollama` program is on `PATH`, or when this host has an Ollama subscription,
   seatswap asks the Ollama server for the balance and the last 24 h's spend. Both
   cards are off by default, and neither sends a request that generates text.
+- **Google:** seatswap sends Google nothing and reads no Google login. `agy` hands the account's email,
+  plan and quota to `seatswap statusline`, which keeps them in `google.json` in its data folder while
+  *Show a Google card* is on (the default).
 - **Sessions and the files behind them:** with *Read Claude Code's session files* on, seatswap also
   reads Codex's rollout files (`<codex folder>/sessions/YYYY/MM/DD/rollout-*.jsonl`) and thread
   names (`<codex folder>/session_index.jsonl`; the folder is the *Codex folder* setting,

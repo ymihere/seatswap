@@ -275,6 +275,7 @@ pub(crate) fn run(
             panel::edit_subscription,
             panel::remove_account,
             panel::switch_codex,
+            panel::connect_agy,
             panel::remove_codex_login,
             panel::save_setting,
             panel::set_auto_burn,

@@ -282,14 +282,21 @@ input[type="checkbox"] {
   margin-bottom: 7px;
 }
 
-.banner-actions {
+/* Buttons in a row: a banner's, and Connect on the Google card. */
+.banner-actions,
+.card-actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 5px;
 }
 
-.banner-actions .btn {
+.card-actions {
+  margin-top: 4px;
+}
+
+.banner-actions .btn,
+.card-actions .btn {
   padding: 3px 8px;
   font-size: 11px;
 }

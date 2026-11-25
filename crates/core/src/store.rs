@@ -868,6 +868,10 @@ fn default_ollama_card() -> bool {
     false
 }
 
+fn default_google_card() -> bool {
+    true
+}
+
 fn default_ollama_url() -> String {
     DEFAULT_OLLAMA_URL.to_string()
 }
@@ -1020,6 +1024,10 @@ pub struct Settings {
     /// [`Settings::validate`].
     #[serde(default = "default_ollama_url")]
     pub ollama_url: String,
+    /// When on, the pop-up shows a Google card as soon as `agy` has handed the
+    /// status line command an account (spec §7.9); default on.
+    #[serde(default = "default_google_card")]
+    pub google_card: bool,
 }
 
 impl Default for Settings {
@@ -1058,6 +1066,7 @@ impl Default for Settings {
             codex_home: None,
             ollama_card: default_ollama_card(),
             ollama_url: default_ollama_url(),
+            google_card: default_google_card(),
         }
     }
 }
@@ -3146,6 +3155,9 @@ mod tests {
         assert_eq!(older.settings.codex_home, None);
         assert!(!older.settings.ollama_card);
         assert_eq!(older.settings.ollama_url, "http://127.0.0.1:11434");
+        // The Google card shows only once an account is found, so it is on.
+        assert!(defaults.google_card);
+        assert!(older.settings.google_card);
 
         // A file with them loads back the same values.
         let settings = Settings {

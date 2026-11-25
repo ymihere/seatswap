@@ -52,7 +52,7 @@ use super::burn_rt::{BurnRuntime, BurnTick, KeptForecast};
 use super::lookup_rt::{self, LookupClient, LookupHandle, MoneyView};
 use super::notify;
 use super::providers_rt::{
-    self, CodexLoginView, ProviderLists, ProviderView, ProvidersClient, ProvidersHandle,
+    self, CodexLoginView, Provider, ProviderLists, ProviderView, ProvidersClient, ProvidersHandle,
 };
 use super::sessions_rt::{self, SessionsHandle};
 use super::ReportedErrors;
@@ -401,6 +401,8 @@ pub(crate) enum ActionCommand {
         account: AccountRef,
         reply: Sender<ActionReply>,
     },
+    /// Write seatswap's status line into `agy`'s settings (spec §7.9).
+    ConnectAgy { reply: Sender<ActionReply> },
     SaveSetting {
         field: String,
         value: serde_json::Value,
@@ -1407,6 +1409,9 @@ impl ActionRuntime {
                 ActionCommand::RemoveCodexLogin { account, reply } => {
                     let _ = reply.send(self.remove_codex_login(&account));
                 }
+                ActionCommand::ConnectAgy { reply } => {
+                    let _ = reply.send(self.connect_agy());
+                }
                 ActionCommand::SaveSetting {
                     field,
                     value,
@@ -1764,11 +1769,12 @@ impl ActionRuntime {
         CodexPaths::resolve(settings.codex_home.as_deref()).map_err(|error| error.to_string())
     }
 
-    /// Tell the provider thread that a Codex login changed, so it polls Codex at
-    /// once. A thread that cannot be reached is reported, never dropped.
-    fn codex_changed(&self) {
+    /// Tell the provider thread that a provider's own files changed, so it polls
+    /// that provider at once. A thread that cannot be reached is reported, never
+    /// dropped.
+    fn provider_changed(&self, provider: Provider) {
         if let Some(providers) = &self.providers {
-            if let Err(text) = providers.codex_changed() {
+            if let Err(text) = providers.changed(provider) {
                 self.reported_errors.report(&text);
             }
         }
@@ -1800,10 +1806,26 @@ impl ActionRuntime {
                 for text in &warnings {
                     self.reported_errors.report(text);
                 }
-                self.codex_changed();
+                self.provider_changed(Provider::Codex);
                 ActionReply::Switched(switched.note)
             }
             Err(error) => ActionReply::Failed(error),
+        }
+    }
+
+    /// Connect `agy` (spec §7.9): seatswap's `statusLine` in its settings, then
+    /// a Google poll at once so the card says it is connected.
+    fn connect_agy(&mut self) -> ActionReply {
+        let agy = match providers_rt::real_agy() {
+            Ok(agy) => agy,
+            Err(error) => return ActionReply::Failed(error),
+        };
+        match providers::google::connect_agy(&agy) {
+            Ok(()) => {
+                self.provider_changed(Provider::Google);
+                ActionReply::Done
+            }
+            Err(error) => ActionReply::Failed(error.to_string()),
         }
     }
 
@@ -1836,7 +1858,7 @@ impl ActionRuntime {
         };
         match providers::codex::forget(&self.app, store.secrets(), account) {
             Ok(()) => {
-                self.codex_changed();
+                self.provider_changed(Provider::Codex);
                 ActionReply::Done
             }
             Err(error) => ActionReply::Failed(error.to_string()),

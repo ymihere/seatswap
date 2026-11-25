@@ -59,6 +59,7 @@ export const DEFAULT_SETTINGS = {
   codexCard: false,
   codexHome: null,
   ollamaCard: false,
+  googleCard: true,
   ollamaUrl: "http://127.0.0.1:11434",
   hostName: null,
   readSessions: true,
@@ -136,6 +137,7 @@ export function fixtureOpenProviders(fixture) {
     let on;
     if (view.provider === "codex") on = settings.codexCard;
     else if (view.provider === "ollama") on = settings.ollamaCard;
+    else if (view.provider === "google") on = settings.googleCard;
     else throw new Error(`unknown provider ${JSON.stringify(view.provider)}`);
     if (typeof on !== "boolean") {
       throw new Error(`the ${view.provider} card setting must be true or false, got ${on}`);
@@ -195,6 +197,7 @@ function exposeFixtureHooks() {
       if (!fixture) throw new Error("fixture is not ready");
       fixtureSaveSetting(fixture, "codexCard", false);
       fixtureSaveSetting(fixture, "ollamaCard", false);
+      fixtureSaveSetting(fixture, "googleCard", false);
       publishFixtureChange();
       return "off";
     },
@@ -713,6 +716,49 @@ function makeFixture() {
         spend24hError: null,
         fetchedAt: isoIn(0),
         error: null,
+      },
+      {
+        provider: "google",
+        title: "Google (Antigravity)",
+        plan: "Pro",
+        email: "sam@mail.example",
+        usage: {
+          limits: [
+            {
+              kind: { other: "5h Claude/GPT" },
+              percent: 75,
+              severity: "normal",
+              resetsAt: isoIn(3 * hour),
+              model: null,
+              isActive: true,
+            },
+            {
+              kind: { other: "week Claude/GPT" },
+              percent: 12,
+              severity: "normal",
+              resetsAt: isoIn(6 * day + 4 * hour),
+              model: null,
+              isActive: false,
+            },
+            {
+              kind: "weekly_all",
+              percent: 25,
+              severity: "normal",
+              resetsAt: isoIn(4 * day + 20 * hour),
+              model: null,
+              isActive: false,
+            },
+          ],
+          extraUsageEnabled: false,
+        },
+        credits: null,
+        spend24h: null,
+        spend24hError: null,
+        fetchedAt: isoIn(-2 * hour),
+        error: null,
+        notRunning: false,
+        notes: ["5h was reset since the last reading"],
+        canConnect: false,
       },
     ],
     providers: [],
@@ -1253,6 +1299,20 @@ export async function fixtureInvoke(command, args) {
       return previous
         ? `Codex now uses ${target.abbr}. Codex sessions already running keep ${previous.abbr} until they restart.`
         : `Codex now uses ${target.abbr}.`;
+    }
+
+    // The Google card's Connect (spec §7.9): the card then says agy is
+    // connected and waits for its first reading, as the provider thread's poll does.
+    case "connect_agy": {
+      const card = fixture.providerCardViews.find((view) => view.provider === "google");
+      if (!card || card.canConnect !== true) {
+        throw new Error("agy is not waiting to be connected");
+      }
+      card.canConnect = false;
+      card.notes = [
+        "agy is connected. Its usage arrives while agy runs; restart agy sessions that were open before.",
+      ];
+      return null;
     }
 
     // Settings → Accounts: deletes seatswap's copy only; the subscription row,

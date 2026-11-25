@@ -1,5 +1,6 @@
-//! The provider thread (step-d.md Task 4): Codex's and Ollama's cards, polled
-//! every five minutes while their switch is on, and Codex's saved logins (R8).
+//! The provider thread (step-d.md Task 4): Codex's, Ollama's and Google's cards,
+//! polled every five minutes while their switch is on, and Codex's saved logins
+//! (R8). Google's poll only reads the file `seatswap statusline` left (spec §7.9).
 //!
 //! The thread opens the store once at spawn ([`store::open_store`]) and keeps
 //! it. A Codex round reads the live login and its usage, saves the live copy
@@ -30,8 +31,9 @@ use serde::Serialize;
 
 use seatswap_core::api::{Api, Usage};
 use seatswap_core::history::{AccountRef, Event, HistoryDir, Hosts, Range, Recorder, Source};
-use seatswap_core::paths::{self, AppPaths, CodexPaths, PathsError};
-use seatswap_core::providers::{self, Credits, ProviderReading, CODEX_ORG, OLLAMA_ORG};
+use seatswap_core::paths::{self, AgyPaths, AppPaths, CodexPaths, PathsError};
+use seatswap_core::providers::google::{Agy, AgyLink};
+use seatswap_core::providers::{self, Credits, ProviderReading, CODEX_ORG, GOOGLE_ORG, OLLAMA_ORG};
 use seatswap_core::store::{self, ProviderSubscription, Settings, Store};
 use seatswap_core::types::CodexLogin;
 
@@ -74,6 +76,13 @@ pub(crate) struct ProviderView {
     /// connection was refused): the card keeps its numbers and says so in a
     /// quiet line, with no error banner (R6).
     pub not_running: bool,
+    /// The signed-in account, when the reading names it (Google's email).
+    pub email: Option<String>,
+    /// What the reading says besides its rows, one quiet line each.
+    pub notes: Vec<String>,
+    /// The card offers Connect: `agy` is installed and its status line is not
+    /// set yet (spec §7.9).
+    pub can_connect: bool,
 }
 
 /// One saved Codex login as the pop-up lists it (R8): the subscription's look
@@ -116,16 +125,20 @@ pub(crate) struct ProviderLists {
 
 /// The provider one card reads, in the list's order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Provider {
+pub(crate) enum Provider {
     Codex,
     Ollama,
+    Google,
 }
 
 impl Provider {
+    const ALL: [Provider; 3] = [Provider::Codex, Provider::Ollama, Provider::Google];
+
     fn name(self) -> &'static str {
         match self {
             Provider::Codex => CODEX_ORG,
             Provider::Ollama => OLLAMA_ORG,
+            Provider::Google => GOOGLE_ORG,
         }
     }
 
@@ -133,6 +146,7 @@ impl Provider {
         match self {
             Provider::Codex => "OpenAI (Codex)",
             Provider::Ollama => "Ollama",
+            Provider::Google => "Google (Antigravity)",
         }
     }
 
@@ -140,6 +154,7 @@ impl Provider {
         match self {
             Provider::Codex => settings.codex_card,
             Provider::Ollama => settings.ollama_card,
+            Provider::Google => settings.google_card,
         }
     }
 
@@ -148,28 +163,7 @@ impl Provider {
         match self {
             Provider::Codex => before.codex_home != after.codex_home,
             Provider::Ollama => before.ollama_url != after.ollama_url,
-        }
-    }
-
-    fn view_mut<'a>(
-        self,
-        codex: &'a mut Option<ProviderView>,
-        ollama: &'a mut Option<ProviderView>,
-    ) -> &'a mut Option<ProviderView> {
-        match self {
-            Provider::Codex => codex,
-            Provider::Ollama => ollama,
-        }
-    }
-
-    fn tried_mut<'a>(
-        self,
-        codex: &'a mut Option<DateTime<Utc>>,
-        ollama: &'a mut Option<DateTime<Utc>>,
-    ) -> &'a mut Option<DateTime<Utc>> {
-        match self {
-            Provider::Codex => codex,
-            Provider::Ollama => ollama,
+            Provider::Google => false,
         }
     }
 }
@@ -181,8 +175,9 @@ enum ProvidersCommand {
     Opened,
     /// A settings save wrote `accounts.json`.
     SettingsSaved,
-    /// A Codex login was switched or forgotten: poll Codex now.
-    CodexChanged,
+    /// A provider's own files changed (a Codex login was switched or
+    /// forgotten, `agy` was connected): poll that provider now.
+    Changed(Provider),
     Stop,
 }
 
@@ -205,10 +200,10 @@ impl ProvidersClient {
         super::send_to_worker(self.commands.send(ProvidersCommand::SettingsSaved))
     }
 
-    /// A Codex login was switched or forgotten: ask the thread to poll Codex at
-    /// once, as a settings save pokes it.
-    pub(crate) fn codex_changed(&self) -> Result<(), String> {
-        super::send_to_worker(self.commands.send(ProvidersCommand::CodexChanged))
+    /// A provider's own files changed: ask the thread to poll it at once, as a
+    /// settings save pokes it.
+    pub(crate) fn changed(&self, provider: Provider) -> Result<(), String> {
+        super::send_to_worker(self.commands.send(ProvidersCommand::Changed(provider)))
     }
 }
 
@@ -243,6 +238,23 @@ impl Drop for ProvidersHandle {
 /// [`CodexPaths::resolve`]; a test passes a folder in its tempdir.
 pub(crate) type CodexPathsLookup =
     Box<dyn Fn(Option<&Path>) -> Result<CodexPaths, PathsError> + Send>;
+
+/// The Google card's line while `agy` is installed but sends seatswap nothing.
+const AGY_NOT_CONNECTED: &str = "agy is installed but does not send its usage to seatswap yet.";
+
+/// The Google card's line once `agy` is connected and before its first reading.
+const AGY_CONNECTED: &str =
+    "agy is connected. Its usage arrives while agy runs; restart agy sessions that were open before.";
+
+/// Where `agy` is on this machine and the console program its status line runs.
+/// The provider thread and the Connect action both use it; tests build an
+/// [`Agy`] in their tempdir.
+pub(crate) fn real_agy() -> Result<Agy, String> {
+    let paths = AgyPaths::resolve().map_err(|error| error.to_string())?;
+    let running = super::autostart::running_program()?;
+    let program = super::autostart::console_program(&running).map_err(|error| error.to_string())?;
+    Ok(Agy { paths, program })
+}
 
 /// The way the thread opens the store (R8): [`store::open_store`] in the app;
 /// a test answers with its own `Store` and can fail an open to show the retry.
@@ -332,6 +344,7 @@ fn run(
         path_var,
         store_opener,
         Box::new(CodexPaths::resolve),
+        real_agy(),
         Box::new(move |_| {
             store::load_accounts(&app_for_lookup)
                 .map(|file| file.settings)
@@ -358,9 +371,9 @@ fn run(
                     runtime.settings_saved(&settings, Utc::now());
                 }
             }
-            Ok(ProvidersCommand::CodexChanged) => {
+            Ok(ProvidersCommand::Changed(provider)) => {
                 if let Some(settings) = settings_of(&app, &mut runtime) {
-                    runtime.codex_changed(&settings, Utc::now());
+                    runtime.changed(provider, &settings, Utc::now());
                 }
             }
             Ok(ProvidersCommand::Stop) | Err(RecvTimeoutError::Disconnected) => return,
@@ -405,6 +418,9 @@ pub(crate) struct ProvidersRuntime {
     /// The one way the thread opens its store.
     store_opener: StoreOpener,
     codex_paths: CodexPathsLookup,
+    /// Where `agy` is and the program its status line runs, or why that is
+    /// unknown: the Google card before its first reading (spec §7.9).
+    agy: Result<Agy, String>,
     /// The way the current settings are read once a request has ended.
     settings_lookup: SettingsLookup,
     /// The recorder, or the sentence that says why there is none.
@@ -420,6 +436,7 @@ pub(crate) struct ProvidersRuntime {
     settings: Option<Settings>,
     codex: Option<ProviderView>,
     ollama: Option<ProviderView>,
+    google: Option<ProviderView>,
     /// The saved Codex logins the pop-up lists; empty while the card is off.
     codex_logins: Vec<CodexLoginView>,
     /// A saved login whose renewal failed, with the stored copy it failed from:
@@ -427,6 +444,7 @@ pub(crate) struct ProvidersRuntime {
     codex_failed: Vec<FailedCodex>,
     codex_tried: Option<DateTime<Utc>>,
     ollama_tried: Option<DateTime<Utc>>,
+    google_tried: Option<DateTime<Utc>>,
     /// Whether the last Ollama poll of this run was `NotRunning`: the change
     /// from running to not running is reported once (R6).
     ollama_not_running: bool,
@@ -534,11 +552,13 @@ impl ProvidersRuntime {
         path_var: Option<OsString>,
         store_opener: StoreOpener,
         codex_paths: CodexPathsLookup,
+        agy: Result<Agy, String>,
         settings_lookup: SettingsLookup,
         report: ReportError,
         printed_warnings: Arc<Mutex<PrintedWarnings>>,
     ) -> ProvidersRuntime {
         ProvidersRuntime {
+            agy,
             api,
             ui,
             app,
@@ -553,10 +573,12 @@ impl ProvidersRuntime {
             settings: None,
             codex: None,
             ollama: None,
+            google: None,
             codex_logins: Vec::new(),
             codex_failed: Vec::new(),
             codex_tried: None,
             ollama_tried: None,
+            google_tried: None,
             ollama_not_running: false,
             live_seen: false,
             last_live: None,
@@ -564,16 +586,30 @@ impl ProvidersRuntime {
         }
     }
 
-    /// The cards that are switched on, Codex first.
+    /// The cards that are switched on, Codex first; Google's only once there is
+    /// an account.
     pub(crate) fn views(&self) -> Vec<ProviderView> {
-        let mut views = Vec::new();
-        if let Some(view) = &self.codex {
-            views.push(view.clone());
+        [&self.codex, &self.ollama, &self.google]
+            .into_iter()
+            .flatten()
+            .cloned()
+            .collect()
+    }
+
+    fn view_mut(&mut self, provider: Provider) -> &mut Option<ProviderView> {
+        match provider {
+            Provider::Codex => &mut self.codex,
+            Provider::Ollama => &mut self.ollama,
+            Provider::Google => &mut self.google,
         }
-        if let Some(view) = &self.ollama {
-            views.push(view.clone());
+    }
+
+    fn tried_mut(&mut self, provider: Provider) -> &mut Option<DateTime<Utc>> {
+        match provider {
+            Provider::Codex => &mut self.codex_tried,
+            Provider::Ollama => &mut self.ollama_tried,
+            Provider::Google => &mut self.google_tried,
         }
-        views
     }
 
     /// The saved Codex logins the snapshot carries; empty while the card is off.
@@ -592,7 +628,7 @@ impl ProvidersRuntime {
         let previous = self.settings.replace(settings.clone());
         self.settle(settings, previous.as_ref());
         let mut due = Vec::new();
-        for provider in [Provider::Codex, Provider::Ollama] {
+        for provider in Provider::ALL {
             if provider.is_on(settings) || self.found(provider, settings) {
                 due.push(provider);
             }
@@ -607,7 +643,7 @@ impl ProvidersRuntime {
         let previous = self.settings.replace(settings.clone());
         let changed = self.settle(settings, previous.as_ref());
         let mut due = Vec::new();
-        for provider in [Provider::Codex, Provider::Ollama] {
+        for provider in Provider::ALL {
             if !provider.is_on(settings) {
                 continue;
             }
@@ -615,10 +651,7 @@ impl ProvidersRuntime {
                 due.push(provider);
                 continue;
             }
-            let tried = match provider {
-                Provider::Codex => self.codex_tried,
-                Provider::Ollama => self.ollama_tried,
-            };
+            let tried = *self.tried_mut(provider);
             let older = tried.is_none_or(|tried| {
                 now.signed_duration_since(tried) > chrono::Duration::seconds(PROVIDER_OPEN_SECS)
             });
@@ -641,7 +674,7 @@ impl ProvidersRuntime {
         let previous = self.settings.replace(settings.clone());
         let changed = self.settle(settings, previous.as_ref());
         let mut due = Vec::new();
-        for provider in [Provider::Codex, Provider::Ollama] {
+        for provider in Provider::ALL {
             if !provider.is_on(settings) {
                 continue;
             }
@@ -657,19 +690,20 @@ impl ProvidersRuntime {
         self.views()
     }
 
-    /// A Codex login was switched or forgotten: poll Codex at once, the way a
-    /// settings save pokes the thread, so the live mark and the rows follow the
-    /// switch before the next five-minute round.
-    pub(crate) fn codex_changed(
+    /// A provider's own files changed (a Codex login was switched or forgotten,
+    /// `agy` was connected): poll it at once, the way a settings save pokes the
+    /// thread, so the card follows before the next five-minute round.
+    pub(crate) fn changed(
         &mut self,
+        provider: Provider,
         settings: &Settings,
         now: DateTime<Utc>,
     ) -> Vec<ProviderView> {
         let previous = self.settings.replace(settings.clone());
         self.settle(settings, previous.as_ref());
         let mut due = Vec::new();
-        if Provider::Codex.is_on(settings) || self.found(Provider::Codex, settings) {
-            due.push(Provider::Codex);
+        if provider.is_on(settings) || self.found(provider, settings) {
+            due.push(provider);
         }
         self.poll(&due, settings, now);
         self.publish();
@@ -681,10 +715,10 @@ impl ProvidersRuntime {
     /// server. Returns the cards whose folder or URL changed.
     fn settle(&mut self, settings: &Settings, previous: Option<&Settings>) -> Vec<Provider> {
         let mut changed = Vec::new();
-        for provider in [Provider::Codex, Provider::Ollama] {
+        for provider in Provider::ALL {
             if !provider.is_on(settings) {
-                *provider.view_mut(&mut self.codex, &mut self.ollama) = None;
-                *provider.tried_mut(&mut self.codex_tried, &mut self.ollama_tried) = None;
+                *self.view_mut(provider) = None;
+                *self.tried_mut(provider) = None;
                 // A card that is off is still polled while its provider is
                 // found by itself; when the URL moved or the provider is not
                 // found, the polling stops or moves and the not-running change
@@ -701,7 +735,7 @@ impl ProvidersRuntime {
                 }
             } else if previous.is_some_and(|previous| provider.setting_changed(previous, settings))
             {
-                *provider.view_mut(&mut self.codex, &mut self.ollama) = None;
+                *self.view_mut(provider) = None;
                 if provider == Provider::Codex {
                     self.codex_logins.clear();
                 }
@@ -721,8 +755,58 @@ impl ProvidersRuntime {
             match provider {
                 Provider::Codex => self.poll_codex(settings, now),
                 Provider::Ollama => self.poll_ollama(settings, now),
+                Provider::Google => self.poll_google(now),
             }
         }
+    }
+
+    /// One Google round: the file `seatswap statusline` left (spec §7.9). Nothing
+    /// is asked, so nothing can change meanwhile; no file is no account and no
+    /// card. The reading is only shown, never recorded.
+    fn poll_google(&mut self, now: DateTime<Utc>) {
+        self.google_tried = Some(now);
+        self.google = match providers::google::read(&self.app, now) {
+            Ok(Some(found)) => {
+                let email = found.reading.account.acc.clone();
+                let mut view = success(Provider::Google, found.reading, found.at);
+                view.email = Some(email);
+                view.notes = found.notes;
+                Some(view)
+            }
+            Ok(None) => self.agy_view(),
+            Err(error) => Some(failure(
+                Provider::Google,
+                self.google.as_ref(),
+                error.to_string(),
+            )),
+        };
+    }
+
+    /// The Google card before its first reading: none while `agy` is not
+    /// installed; otherwise a card that says how `agy` stands and offers
+    /// Connect while its status line is not set.
+    fn agy_view(&self) -> Option<ProviderView> {
+        let link = match &self.agy {
+            Ok(agy) => providers::google::agy_link(agy).map_err(|error| error.to_string()),
+            Err(text) => Err(text.clone()),
+        };
+        let (note, can_connect) = match link {
+            Ok(AgyLink::NotInstalled) => return None,
+            Ok(AgyLink::NotConnected) => (AGY_NOT_CONNECTED.to_string(), true),
+            Ok(AgyLink::Connected) => (AGY_CONNECTED.to_string(), false),
+            Ok(AgyLink::Other(command)) => (
+                format!(
+                    "agy's status line runs {command}, and no reading has come from it yet. \
+                     seatswap gets agy's usage only when that command is seatswap statusline."
+                ),
+                false,
+            ),
+            Err(error) => return Some(failure(Provider::Google, None, error)),
+        };
+        let mut view = last_numbers(Provider::Google, None);
+        view.notes = vec![note];
+        view.can_connect = can_connect;
+        Some(view)
     }
 
     /// The settings as they are after a request ended, or `None` after
@@ -1161,6 +1245,9 @@ impl ProvidersRuntime {
                     .is_some_and(|path_var| paths::program_on_path("ollama", path_var).is_some());
                 in_path || !self.subscriptions(provider).is_empty()
             }
+            // Being found means a reading is recorded with the card off; a
+            // Google reading is only shown.
+            Provider::Google => false,
         }
     }
 
@@ -1376,6 +1463,9 @@ fn success(provider: Provider, reading: ProviderReading, now: DateTime<Utc>) -> 
         fetched_at: Some(now),
         error: None,
         not_running: false,
+        email: None,
+        notes: Vec::new(),
+        can_connect: false,
     }
 }
 
@@ -1393,6 +1483,9 @@ fn last_numbers(provider: Provider, last: Option<&ProviderView>) -> ProviderView
         fetched_at: last.and_then(|view| view.fetched_at),
         error: None,
         not_running: false,
+        email: last.and_then(|view| view.email.clone()),
+        notes: last.map(|view| view.notes.clone()).unwrap_or_default(),
+        can_connect: false,
     }
 }
 
@@ -1491,6 +1584,122 @@ mod tests {
         }
     }
 
+    /// A Google file appears and goes with its card; the history never hears of it.
+    #[test]
+    fn the_google_card_shows_once_an_account_is_found() {
+        let dir = tempdir().expect("tempdir");
+        let app = test_app(dir.path());
+        let now = utc("2026-11-25T12:00:00Z");
+        let mut runtime = test_runtime(dir.path(), Api::default(), &dir.path().join("codex"));
+        assert!(runtime.poll_round(&settings(), now).is_empty());
+
+        let raw = serde_json::json!({
+            "product": "antigravity", "email": "sam@mail.example", "plan_tier": "Pro",
+            "quota": {"gemini-weekly": {"remaining_fraction": 0.75,
+                                        "reset_time": "2026-11-30T07:50:32Z"},
+                      "gemini-5h": {"remaining_fraction": 0.5,
+                                    "reset_time": "2026-11-25T11:00:00Z"}}
+        });
+        let read_at = utc("2026-11-25T10:00:00Z");
+        let feed = providers::google::feed_from_payload(&raw, read_at).expect("a feed");
+        providers::google::write_if_due(&app, &feed).expect("the Google file");
+
+        let view = only_view(runtime.poll_round(&settings(), now));
+        assert_eq!(view.provider, "google");
+        assert_eq!(view.plan.as_deref(), Some("Pro"));
+        assert_eq!(view.email.as_deref(), Some("sam@mail.example"));
+        assert_eq!(view.fetched_at, Some(read_at));
+        assert_eq!(view.notes, vec!["5h was reset since the last reading"]);
+        assert_eq!(view.usage.expect("usage").limits.len(), 1);
+        assert!(!dir.path().join("history").exists());
+
+        let off = Settings {
+            google_card: false,
+            ..settings()
+        };
+        assert!(runtime.settings_saved(&off, now).is_empty());
+        assert_eq!(runtime.settings_saved(&settings(), now).len(), 1);
+
+        std::fs::write(app.google_file(), b"{").expect("a broken file");
+        let view = only_view(runtime.poll_round(&settings(), now));
+        assert!(view.error.expect("an error").contains("google.json"));
+        assert_eq!(view.fetched_at, Some(read_at));
+    }
+
+    /// Before its first reading the Google card follows `agy`: none while it is
+    /// not installed, Connect while its status line is not set, a quiet line
+    /// once connected, and the reading as soon as one arrives.
+    #[test]
+    fn the_google_card_offers_connect_while_agy_is_not_connected() {
+        let dir = tempdir().expect("tempdir");
+        let app = test_app(dir.path());
+        let now = utc("2026-11-25T12:00:00Z");
+        let mut runtime = test_runtime(dir.path(), Api::default(), &dir.path().join("codex"));
+        assert!(runtime.poll_round(&settings(), now).is_empty());
+
+        let agy = test_agy(dir.path()).expect("agy");
+        std::fs::create_dir_all(&agy.paths.dir).expect("agy's folder");
+        std::fs::write(
+            agy.paths.settings_file(),
+            br#"{"model":"Gemini 4 Neon (High)"}"#,
+        )
+        .expect("agy's settings");
+        let view = only_view(runtime.poll_round(&settings(), now));
+        assert_eq!(view.provider, "google");
+        assert!(view.can_connect);
+        assert_eq!(view.notes, vec![AGY_NOT_CONNECTED]);
+        assert!(view.usage.is_none() && view.error.is_none());
+
+        providers::google::connect_agy(&agy).expect("connected");
+        let view = only_view(runtime.changed(Provider::Google, &settings(), now));
+        assert!(!view.can_connect);
+        assert_eq!(view.notes, vec![AGY_CONNECTED]);
+
+        let raw = serde_json::json!({
+            "product": "antigravity", "email": "sam@mail.example", "plan_tier": "Pro",
+            "quota": {"gemini-weekly": {"remaining_fraction": 0.75,
+                                        "reset_time": "2026-11-30T07:50:32Z"}}
+        });
+        let feed = providers::google::feed_from_payload(&raw, now).expect("a feed");
+        providers::google::write_if_due(&app, &feed).expect("the Google file");
+        let view = only_view(runtime.changed(Provider::Google, &settings(), now));
+        assert!(!view.can_connect);
+        assert!(view.notes.is_empty());
+        assert_eq!(view.email.as_deref(), Some("sam@mail.example"));
+
+        let off = Settings {
+            google_card: false,
+            ..settings()
+        };
+        assert!(runtime.changed(Provider::Google, &off, now).is_empty());
+    }
+
+    /// A status line that runs something else is named, with no Connect.
+    #[test]
+    fn the_google_card_names_another_status_line() {
+        let dir = tempdir().expect("tempdir");
+        let now = utc("2026-11-25T12:00:00Z");
+        let mut runtime = test_runtime(dir.path(), Api::default(), &dir.path().join("codex"));
+        let agy = test_agy(dir.path()).expect("agy");
+        std::fs::create_dir_all(&agy.paths.dir).expect("agy's folder");
+        std::fs::write(
+            agy.paths.settings_file(),
+            br#"{"statusLine":{"type":"command","command":"bash ~/bin/agy-line.sh"}}"#,
+        )
+        .expect("agy's settings");
+        let view = only_view(runtime.poll_round(&settings(), now));
+        assert!(!view.can_connect);
+        assert!(
+            view.notes[0].contains("bash ~/bin/agy-line.sh"),
+            "{:?}",
+            view.notes
+        );
+
+        std::fs::write(agy.paths.settings_file(), b"{").expect("broken settings");
+        let view = only_view(runtime.poll_round(&settings(), utc("2026-11-25T12:10:00Z")));
+        assert!(view.error.expect("an error").contains("settings.json"));
+    }
+
     fn write_auth(folder: &Path) {
         std::fs::create_dir_all(folder).expect("the Codex folder");
         std::fs::write(folder.join("auth.json"), AUTH).expect("auth.json");
@@ -1522,6 +1731,14 @@ mod tests {
 
     fn test_app(dir: &Path) -> AppPaths {
         AppPaths::at(&dir.join("data"))
+    }
+
+    /// `agy` at `<dir>/agy`: not installed until a test makes that folder.
+    fn test_agy(dir: &Path) -> Result<Agy, String> {
+        Ok(Agy {
+            paths: AgyPaths::at(&dir.join("agy")),
+            program: dir.join("bin").join("seatswap"),
+        })
     }
 
     fn test_store(dir: &Path) -> Store {
@@ -1632,6 +1849,7 @@ mod tests {
             Some(path_var),
             store_opener,
             codex_paths,
+            test_agy(dir),
             settings_lookup,
             report,
             Arc::new(Mutex::new(PrintedWarnings::new())),
@@ -2447,6 +2665,7 @@ mod tests {
             Some(OsString::new()),
             opener,
             Box::new(move |_| Ok(CodexPaths::at(&folder))),
+            test_agy(dir.path()),
             same_settings(),
             Box::new(|_| {}),
             Arc::new(Mutex::new(PrintedWarnings::new())),
@@ -3656,6 +3875,7 @@ mod tests {
             Some(OsString::new()),
             test_store_opener(app),
             Box::new(move |_| Ok(CodexPaths::at(&codex_home))),
+            test_agy(dir.path()),
             same_settings(),
             report,
             Arc::new(Mutex::new(PrintedWarnings::new())),
@@ -3919,6 +4139,7 @@ mod tests {
             Some(OsString::new()),
             test_store_opener(app),
             Box::new(move |_| Ok(CodexPaths::at(&folder))),
+            test_agy(dir.path()),
             same_settings(),
             report,
             Arc::new(Mutex::new(PrintedWarnings::new())),

@@ -1,4 +1,7 @@
-//! The one key seatswap writes in Claude Code's `settings.json`: `statusLine`.
+//! The one key seatswap writes in a `settings.json` of a tool that runs a
+//! status line command: `statusLine`, in Claude Code's file and, when the person
+//! connects it on the Google card, in the Antigravity CLI's (`agy`) file
+//! (spec §7.9).
 //!
 //! A missing file is created holding only that key. An empty file, one that is
 //! not a JSON object, or broken JSON is an error with its path and is left
@@ -36,7 +39,7 @@ pub enum ClaudeSettingsError {
         #[source]
         source: serde_json::Error,
     },
-    #[error("{path} is not valid Unicode, so it cannot be written into Claude Code's settings")]
+    #[error("{path} is not valid Unicode, so it cannot be written into a status line command")]
     NotUnicode { path: PathBuf },
 }
 
@@ -59,7 +62,13 @@ impl ClaudeSettingsError {
 /// The current value of `statusLine`, or `None` when the key or the file is
 /// missing.
 pub fn status_line(claude: &ClaudePaths) -> Result<Option<Value>, ClaudeSettingsError> {
-    Ok(read_object(&claude.settings_file())?.and_then(|object| object.get("statusLine").cloned()))
+    status_line_in(&claude.settings_file())
+}
+
+/// The current value of `statusLine` in the settings file at `path` (Claude
+/// Code's or `agy`'s), or `None` when the key or the file is missing.
+pub fn status_line_in(path: &Path) -> Result<Option<Value>, ClaudeSettingsError> {
+    Ok(read_object(path)?.and_then(|object| object.get("statusLine").cloned()))
 }
 
 /// Set (`Some`) or remove (`None`) `statusLine`. Every other key and the key
@@ -70,14 +79,22 @@ pub fn set_status_line(
     claude: &ClaudePaths,
     value: Option<&Value>,
 ) -> Result<Option<Value>, ClaudeSettingsError> {
-    let path = claude.settings_file();
-    let Some(mut object) = read_object(&path)? else {
+    set_status_line_in(&claude.settings_file(), value)
+}
+
+/// [`set_status_line`] for the settings file at `path` (Claude Code's or
+/// `agy`'s), with the same rules.
+pub fn set_status_line_in(
+    path: &Path,
+    value: Option<&Value>,
+) -> Result<Option<Value>, ClaudeSettingsError> {
+    let Some(mut object) = read_object(path)? else {
         let Some(value) = value else {
             return Ok(None);
         };
         let mut object = Map::new();
         object.insert("statusLine".to_string(), value.clone());
-        write_object(&path, &object)?;
+        write_object(path, &object)?;
         return Ok(None);
     };
     let previous = match value {
@@ -88,8 +105,8 @@ pub fn set_status_line(
     if value.is_none() && previous.is_none() {
         return Ok(None);
     }
-    atomic::backup_once(&path).map_err(|source| ClaudeSettingsError::io(&path, source))?;
-    write_object(&path, &object)?;
+    atomic::backup_once(path).map_err(|source| ClaudeSettingsError::io(path, source))?;
+    write_object(path, &object)?;
     Ok(previous)
 }
 
@@ -102,17 +119,22 @@ pub fn set_status_line(
 /// path's leading `\\` becomes `\\\\`). A path that is not valid Unicode is
 /// [`ClaudeSettingsError::NotUnicode`], never a lossy replacement.
 pub fn seatswap_status_line(exe: &Path) -> Result<Value, ClaudeSettingsError> {
+    Ok(json!({
+        "type": "command",
+        "command": status_line_command(exe)?,
+        "refreshInterval": 2,
+    }))
+}
+
+/// The command both tools run: `"<exe>" statusline`, the path quoted as
+/// [`seatswap_status_line`] describes.
+pub fn status_line_command(exe: &Path) -> Result<String, ClaudeSettingsError> {
     let path = exe
         .to_str()
         .ok_or_else(|| ClaudeSettingsError::NotUnicode {
             path: exe.to_path_buf(),
         })?;
-    let command = format!("\"{}\" statusline", quote_path(path));
-    Ok(json!({
-        "type": "command",
-        "command": command,
-        "refreshInterval": 2,
-    }))
+    Ok(format!("\"{}\" statusline", quote_path(path)))
 }
 
 /// `path` as one bash double-quoted word's contents: `"`, `$` and `` ` `` are
@@ -147,7 +169,7 @@ fn quote_path(path: &str) -> String {
     quoted
 }
 
-/// Claude Code's settings object. A missing file is `None`; an empty file, a
+/// A settings object. A missing file is `None`; an empty file, a
 /// value that is not an object, and broken JSON are errors with the path.
 fn read_object(path: &Path) -> Result<Option<Map<String, Value>>, ClaudeSettingsError> {
     let bytes = match fs::read(path) {

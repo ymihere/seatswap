@@ -686,6 +686,11 @@ fn statusline_line(cli: &Cli, stdin: &[u8], now: DateTime<Utc>) -> Result<String
         .validate()
         .map_err(|error| error.to_string())?;
     let payload = statusline::parse(stdin);
+    // `agy` runs the same command; its payload holds a Google account's numbers
+    // and nothing of Claude Code's.
+    if let Some(line) = statusline::google_line(&app, &file.settings, &payload, now)? {
+        return Ok(line);
+    }
     if let Err(reason) = statusline::publish_feed(&app, &file.settings, &payload, now) {
         return Err(format!("feed: {reason}"));
     }
@@ -3422,6 +3427,48 @@ pub(crate) mod tests {
         let mut input: &[u8] = br#"{"model":{"id":"claude-fable-5-2","display_name":"Fable 5.2"}}"#;
         let line = statusline(&fixture.cli(Command::Statusline), &mut input);
         assert!(line.contains("Fable 5.2"), "{line}");
+    }
+
+    const AGY_PAYLOAD: &[u8] = br#"{"product":"antigravity","version":"1.5.17","plan_tier":"Pro","email":"sam@mail.example","model":{"id":"Gemini 4 Argon (Medium)","display_name":"Gemini 4 Argon (Medium)"},"quota":{"gemini-weekly":{"remaining_fraction":0.9378,"reset_time":"2126-07-06T07:50:32Z","reset_in_seconds":560580}}}"#;
+
+    #[test]
+    fn agys_payload_goes_to_the_google_file_and_nowhere_else() {
+        let fixture = Fixture::new();
+        fixture.add_account(0);
+        let app = AppPaths::at(&fixture.data_dir);
+        let now = Utc::now();
+
+        let line = statusline_output(&fixture.cli(Command::Statusline), AGY_PAYLOAD, now);
+        assert_eq!(line, "Google Pro · week 6%");
+        assert!(app.google_file().is_file());
+        assert!(!app.feed_file().exists());
+        assert!(!app.statusline_keys_file().exists());
+
+        // Signed out: an empty line, and the last reading stays.
+        let before = fs::read(app.google_file()).expect("the Google file");
+        let line = statusline_output(
+            &fixture.cli(Command::Statusline),
+            br#"{"product":"antigravity"}"#,
+            now,
+        );
+        assert_eq!(line, "");
+        assert_eq!(fs::read(app.google_file()).expect("the file"), before);
+    }
+
+    #[test]
+    fn no_google_file_while_the_card_is_off() {
+        let fixture = Fixture::new();
+        fixture.add_account(0);
+        let app = AppPaths::at(&fixture.data_dir);
+        let path = app.accounts_file();
+        let mut file: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).expect("accounts.json")).expect("JSON");
+        file["settings"]["googleCard"] = serde_json::Value::Bool(false);
+        fs::write(&path, file.to_string()).expect("accounts.json");
+
+        let line = statusline_output(&fixture.cli(Command::Statusline), AGY_PAYLOAD, Utc::now());
+        assert_eq!(line, "Google Pro · week 6%");
+        assert!(!app.google_file().exists());
     }
 
     #[test]

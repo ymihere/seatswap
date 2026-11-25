@@ -56,6 +56,10 @@ const state = {
   codexPending: null,
   // The worker's error answer, shown in the OpenAI card until the next click.
   codexSwitchError: null,
+  // Connect on the Google card is running, and the worker's refusal, shown in
+  // the card until the next click (spec §7.9).
+  agyPending: false,
+  agyConnectError: null,
   lastPercents: new Map(),
   lastCardOrder: [],
   errors: {
@@ -1214,7 +1218,11 @@ function renderProviderCard(view) {
     main.appendChild(renderCodexLogins(logins));
   } else {
     const meta = [];
-    if (numbers && typeof view.plan === "string" && view.plan !== "") meta.push(view.plan);
+    if (numbers && typeof view.email === "string" && view.email !== "") meta.push(view.email);
+    if (numbers && typeof view.plan === "string" && view.plan !== "") {
+      if (meta.length > 0) meta.push(" · ");
+      meta.push(view.plan);
+    }
     const age = numbers ? usageAge(view) : null;
     if (age) {
       if (meta.length > 0) meta.push(" · ");
@@ -1234,10 +1242,16 @@ function renderProviderCard(view) {
       const limits = renderLimitRows(view);
       if (limits.length > 0) {
         main.appendChild(h("div", { class: "usage-rows" }, limits));
-      } else {
+      } else if (!(Array.isArray(view.notes) && view.notes.length > 0)) {
         main.appendChild(h("div", { class: "card-note", text: NO_LIMITS_TEXT }));
       }
     }
+  }
+
+  // What the reading says besides its rows (a window that was reset, a bucket
+  // that could not be read).
+  for (const text of Array.isArray(view.notes) ? view.notes : []) {
+    main.appendChild(h("div", { class: "card-note", text, title: text }));
   }
 
   // A failed round with no live login has no row to carry its text, so the card
@@ -1256,6 +1270,28 @@ function renderProviderCard(view) {
         class: "card-note error",
         text: String(view.error),
         title: String(view.error),
+      })
+    );
+  }
+
+  // `agy` is installed and sends seatswap nothing yet: one click writes its
+  // status line setting (spec §7.9).
+  if (view.canConnect === true) {
+    main.appendChild(
+      h("div", { class: "card-actions" }, [
+        button(state.agyPending ? "Connecting…" : "Connect agy", "primary small", connectAgy, {
+          disabled: state.agyPending,
+          title: "Add seatswap's status line to agy's settings (backed up first)",
+        }),
+      ])
+    );
+  }
+  if (view.provider === "google" && state.agyConnectError) {
+    main.appendChild(
+      h("div", {
+        class: "card-note error",
+        text: state.agyConnectError,
+        title: state.agyConnectError,
       })
     );
   }
@@ -1400,6 +1436,25 @@ async function switchCodexLogin(login) {
   } catch (error) {
     state.codexPending = null;
     state.codexSwitchError = errorMessage(error);
+    renderMain();
+  }
+}
+
+// Connect `agy` (spec §7.9). The provider thread polls Google right after, so
+// the card's next update says it is connected; a refusal shows in the card.
+async function connectAgy() {
+  if (state.agyPending) return;
+  state.agyPending = true;
+  state.agyConnectError = null;
+  renderMain();
+  try {
+    await invoke("connect_agy", {});
+    state.agyPending = false;
+    afterCommand();
+    renderMain();
+  } catch (error) {
+    state.agyPending = false;
+    state.agyConnectError = errorMessage(error);
     renderMain();
   }
 }

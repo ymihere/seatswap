@@ -9,8 +9,10 @@
 
 use std::fs;
 use std::io;
+use std::path::Path;
 
 use chrono::{DateTime, Utc};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::api::{LimitKind, Usage};
@@ -75,18 +77,35 @@ pub struct Feed {
 /// The file is seatswap's own cache of the last numbers, never a source of
 /// truth: a file that does not parse is simply overwritten by this call.
 pub fn write_if_due(app: &AppPaths, feed: &Feed) -> io::Result<bool> {
-    let write = match read(app) {
+    write_file_if_due(app, &app.feed_file(), feed, feed.at, |stored: &Feed| {
+        let same = stored.five_hour == feed.five_hour
+            && stored.seven_day == feed.seven_day
+            && stored.session == feed.session
+            && stored.cost_usd == feed.cost_usd
+            && stored.cost_problem == feed.cost_problem;
+        (stored.at, same)
+    })
+}
+
+/// The one write rule of a status line's file in the data folder: write `value`,
+/// read at `at`, when `stored_state` (the stored file's own time, and whether its
+/// numbers are the same) says they changed, when the file is at least 10 s older
+/// than `at`, when the clock was set back, or when the file does not parse.
+pub(crate) fn write_file_if_due<T: Serialize + DeserializeOwned>(
+    app: &AppPaths,
+    path: &Path,
+    value: &T,
+    at: DateTime<Utc>,
+    stored_state: impl FnOnce(&T) -> (DateTime<Utc>, bool),
+) -> io::Result<bool> {
+    let write = match read_file::<T>(path) {
         Ok(Some(stored)) => {
-            let same = stored.five_hour == feed.five_hour
-                && stored.seven_day == feed.seven_day
-                && stored.session == feed.session
-                && stored.cost_usd == feed.cost_usd
-                && stored.cost_problem == feed.cost_problem;
-            let old_enough = feed.at.signed_duration_since(stored.at)
+            let (stored_at, same) = stored_state(&stored);
+            let old_enough = at.signed_duration_since(stored_at)
                 >= chrono::Duration::seconds(REWRITE_AFTER_SECS);
-            // A stored `at` later than this reading means the clock was set
+            // A stored time later than this reading means the clock was set
             // back; that must not block every write until it catches up.
-            let clock_went_back = stored.at > feed.at;
+            let clock_went_back = stored_at > at;
             !same || old_enough || clock_went_back
         }
         Ok(None) => true,
@@ -98,18 +117,22 @@ pub fn write_if_due(app: &AppPaths, feed: &Feed) -> io::Result<bool> {
         return Ok(false);
     }
     atomic::ensure_private_dir(&app.data_dir)?;
-    let path = app.feed_file();
-    let bytes = serde_json::to_vec_pretty(feed)
+    let bytes = serde_json::to_vec_pretty(value)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    write_atomic(&path, &bytes, Access::Private)?;
+    write_atomic(path, &bytes, Access::Private)?;
     Ok(true)
 }
 
 /// Read `<data>/feed.json`. A missing file is `None`; a file that does not
 /// parse is [`io::ErrorKind::InvalidData`], which [`write_if_due`] replaces.
 pub fn read(app: &AppPaths) -> io::Result<Option<Feed>> {
-    let path = app.feed_file();
-    let bytes = match fs::read(&path) {
+    read_file(&app.feed_file())
+}
+
+/// A status line's file: `None` when it is missing, and
+/// [`io::ErrorKind::InvalidData`] when it does not parse.
+pub(crate) fn read_file<T: DeserializeOwned>(path: &Path) -> io::Result<Option<T>> {
+    let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
