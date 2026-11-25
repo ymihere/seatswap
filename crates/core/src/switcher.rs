@@ -899,8 +899,11 @@ pub fn edit_subscription(
     )?;
     let plan = match plan {
         Some(value) => {
-            if Company::of_account(&file.provider_subscriptions[index].account) != Company::Ollama {
-                return Err(SwitchError::PlanFromProvider { company: "OpenAI" });
+            let company = Company::of_account(&file.provider_subscriptions[index].account);
+            if company != Company::Ollama {
+                return Err(SwitchError::PlanFromProvider {
+                    company: company.name(),
+                });
             }
             Some(
                 value
@@ -2101,6 +2104,47 @@ mod tests {
             before,
             "a refused price leaves accounts.json untouched"
         );
+    }
+
+    /// Only Ollama's plan is typed by the person: a provider that names its
+    /// plan says so in the refusal, under its own name.
+    #[test]
+    fn a_plan_the_provider_names_cannot_be_edited() {
+        let w = World::new();
+        for (org, acc, company) in [
+            (
+                crate::providers::CODEX_ORG,
+                "0f3a6c2e-7b1d-4e9a-8c5f-2d4b6a8e0c13",
+                "OpenAI",
+            ),
+            (crate::providers::GOOGLE_ORG, "sam@mail.example", "Google"),
+        ] {
+            let account = AccountRef {
+                acc: acc.to_string(),
+                org: org.to_string(),
+            };
+            let mut file = w.account_file();
+            assert!(file
+                .ensure_provider_subscription(&account, Some("Pro"))
+                .unwrap());
+            w.store.save(&file).unwrap();
+            let refused = edit_subscription(
+                w.store.app_paths(),
+                &account,
+                None,
+                None,
+                None,
+                Some(Some("Ultra")),
+                None,
+            );
+            assert!(
+                matches!(
+                    &refused,
+                    Err(SwitchError::PlanFromProvider { company: named }) if *named == company
+                ),
+                "{refused:?}"
+            );
+        }
     }
 
     #[test]

@@ -1467,8 +1467,9 @@ impl AccountsFile {
     /// Its abbreviation is unique among the Claude accounts and the other
     /// subscriptions; when `OA` or `OL` is taken, the base's first letter with
     /// the first free digit 2-9 (`O2`, `O3`, …) is used. Every abbreviation
-    /// goes through the one [`validate_abbr`] rule. Only a Codex or Ollama
-    /// `AccountRef` makes a subscription; a Claude account's org is refused.
+    /// goes through the one [`validate_abbr`] rule. Only a Codex, Ollama
+    /// or Google `AccountRef` makes a subscription; a Claude account's org is
+    /// refused.
     pub fn ensure_provider_subscription(
         &mut self,
         account: &AccountRef,
@@ -1492,6 +1493,7 @@ impl AccountsFile {
         let (base_abbr, color) = match company {
             crate::money::Company::OpenAI => ("OA", "#db2777"),
             crate::money::Company::Ollama => ("OL", "#ea580c"),
+            crate::money::Company::Google => ("GO", "#0d9488"),
             crate::money::Company::Anthropic => {
                 return Err(StoreError::NotProvider(account.acc.clone()))
             }
@@ -4523,7 +4525,27 @@ mod tests {
             "a second call kept the plan"
         );
         assert!(!file.ensure_provider_subscription(&ollama, None).unwrap());
-        assert_eq!(file.provider_subscriptions.len(), 2);
+
+        let google = |email: &str| AccountRef {
+            acc: email.to_string(),
+            org: crate::providers::GOOGLE_ORG.to_string(),
+        };
+        for (email, abbr) in [("sam@mail.example", "GO"), ("kim@mail.example", "G2")] {
+            assert!(file
+                .ensure_provider_subscription(&google(email), Some("Google AI Pro"))
+                .unwrap());
+            let subscription = file.provider_subscription(&google(email)).expect("GO");
+            assert_eq!(
+                (
+                    subscription.label.as_str(),
+                    subscription.abbr.as_str(),
+                    subscription.color.as_str(),
+                    subscription.plan.as_deref(),
+                ),
+                ("Google", abbr, "#0d9488", Some("Google AI Pro"))
+            );
+        }
+        assert_eq!(file.provider_subscriptions.len(), 4);
 
         let json = serde_json::to_value(&file).unwrap();
         assert!(json.get("providerSubscriptions").is_some());

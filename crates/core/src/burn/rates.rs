@@ -231,10 +231,10 @@ impl RateAccount {
 }
 
 /// The limit whose percent is the main factor `c` of a company (decision 1 of
-/// M-2): `weekly_all` for Anthropic and OpenAI, Ollama's `monthly_credits`.
+/// M-2): `weekly_all` for Anthropic, OpenAI and Google, Ollama's `monthly_credits`.
 pub(crate) fn main_limit(company: Company) -> LimitKind {
     match company {
-        Company::Anthropic | Company::OpenAI => LimitKind::WeeklyAll,
+        Company::Anthropic | Company::OpenAI | Company::Google => LimitKind::WeeklyAll,
         Company::Ollama => LimitKind::Other("monthly_credits".to_string()),
     }
 }
@@ -667,14 +667,14 @@ fn owned_pairs(
         company: subject.company,
         subscription: match subject.company {
             Company::Ollama => &ollama,
-            Company::Anthropic | Company::OpenAI => &subject.account,
+            Company::Anthropic | Company::OpenAI | Company::Google => &subject.account,
         },
         timelines: &pools.provider_timelines,
         openai: &pools.openai,
     };
     let owner = match subject.company {
         Company::Anthropic => Ownership::Claude(&subject.account),
-        Company::OpenAI | Company::Ollama => Ownership::Provider(&provider),
+        Company::OpenAI | Company::Ollama | Company::Google => Ownership::Provider(&provider),
     };
     let mut openai_without_login = BTreeMap::new();
     let work = work_for(
@@ -697,7 +697,7 @@ fn owned_pairs(
                     live_seconds(&pools.timelines, &subject.account, pair.from, pair.to)
                         >= MIN_LIVE_SHARE * seconds_between(pair.from, pair.to)
                 }
-                Company::OpenAI | Company::Ollama => work.own,
+                Company::OpenAI | Company::Ollama | Company::Google => work.own,
             }
         })
         .collect();
@@ -1084,6 +1084,8 @@ fn work_for(
                 let usd = api_usd(record, prices);
                 let belongs = match company {
                     Company::Ollama => provider.subscription == &ollama_subscription(),
+                    // No model id is Google's.
+                    Company::Google => false,
                     Company::Anthropic | Company::OpenAI => {
                         match openai_subscription_at(
                             provider.timelines,

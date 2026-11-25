@@ -15,7 +15,7 @@ use crate::burn::rates::{self, main_limit, worked_hour, PairLimit, RateAccount, 
 use crate::burn::{usd_hours, Rates, RHYTHM_WEEKS};
 use crate::history::{AccountRef, Event, Hosted, Hosts, Range, Sample, TokenRecord, WindowRecord};
 use crate::live_sessions::Values;
-use crate::money::{api_usd, model_price_key, price_key, work_usd, Company, Valuer};
+use crate::money::{api_usd, model_price_key, price_key, work_usd, Company, Missing, Valuer};
 use crate::transcripts::Tokens;
 
 use super::subscriptions::{self, HistoryReads, Period, UsageInput};
@@ -39,6 +39,15 @@ const POINTS_BEFORE_CHANGE: usize = 8;
 /// Why a subscription has no figure: `rates_in` found no pair whose work is
 /// priced in the range, so it has no main-limit factor.
 const NO_FACTOR_REASON: &str = "not measured yet: no pair with priced work in this range";
+
+/// Why a subscription of `company` has no factor.
+fn no_factor_reason(company: Company) -> String {
+    if company.work_recorded() {
+        NO_FACTOR_REASON.to_string()
+    } else {
+        Missing::WorkNotRecorded.to_string()
+    }
+}
 
 /// Why a subscription with a factor has no model figures: it ran no model with
 /// a price in the range.
@@ -321,13 +330,21 @@ struct UsageEntry {
     row: UsageRow,
     /// What it paid over its finished periods, in the display currency.
     paid: Option<f64>,
-    /// Its finished weeks or months in the range; the totals count it only
-    /// when this is more than 0.
+    /// Its finished weeks or months in the range.
     periods: u32,
     /// Whether it counts per month (Ollama) rather than per week.
     ollama: bool,
     values: Values,
     tokens: u64,
+}
+
+impl UsageEntry {
+    /// Whether the totals count the subscription: it has a finished period of
+    /// the range, and its work is recorded, so price and work can be set
+    /// against each other.
+    fn counted(&self) -> bool {
+        self.periods > 0 && self.company.work_recorded()
+    }
 }
 
 pub(crate) fn subscriptions_in<Tz: TimeZone + Copy>(
@@ -487,7 +504,7 @@ pub(crate) fn subscriptions_in<Tz: TimeZone + Copy>(
             .or_default()
             .add(record, usd);
         let finished = match company {
-            Company::Anthropic | Company::OpenAI => {
+            Company::Anthropic | Company::OpenAI | Company::Google => {
                 week_of_record(&weeks, &owner, record.t).is_some()
             }
             Company::Ollama => months.get(&owner).is_some_and(|months| {
@@ -556,12 +573,16 @@ pub(crate) fn subscriptions_in<Tz: TimeZone + Copy>(
             .and_then(|period| period.plan.clone())
             .or_else(|| match subject.company {
                 Company::Anthropic => stored_account(ctx, reference).and_then(|a| a.plan.clone()),
-                Company::OpenAI | Company::Ollama => subject.plan.clone(),
+                Company::OpenAI | Company::Ollama | Company::Google => subject.plan.clone(),
             });
-        let values = finished_values
-            .get(reference)
-            .cloned()
-            .unwrap_or_else(|| empty_values.clone());
+        let values = if subject.company.work_recorded() {
+            finished_values
+                .get(reference)
+                .cloned()
+                .unwrap_or_else(|| empty_values.clone())
+        } else {
+            Values::missing(&Missing::WorkNotRecorded.to_string(), ctx.settings)
+        };
         let tokens_here = finished_tokens.get(reference).copied().unwrap_or(0);
         let own_months = subject_months
             .iter()
@@ -587,13 +608,7 @@ pub(crate) fn subscriptions_in<Tz: TimeZone + Copy>(
             now: ctx.now,
             finished_periods: periods_here,
         })?;
-        if periods_here > 0 && subject.company != Company::Ollama && own_weeks < range_weeks {
-            partial.push(Partial {
-                id: id.clone(),
-                weeks: own_weeks,
-            });
-        }
-        usage_rows.push(UsageEntry {
+        let entry = UsageEntry {
             company: subject.company,
             row: usage,
             paid,
@@ -601,7 +616,14 @@ pub(crate) fn subscriptions_in<Tz: TimeZone + Copy>(
             ollama: subject.company == Company::Ollama,
             values,
             tokens: tokens_here,
-        });
+        };
+        if entry.counted() && subject.company != Company::Ollama && own_weeks < range_weeks {
+            partial.push(Partial {
+                id: id.clone(),
+                weeks: own_weeks,
+            });
+        }
+        usage_rows.push(entry);
 
         let owner_model_stats = owner_models.get(reference);
         let main = main_model(owner_model_stats, &company_models, subject.company);
@@ -639,7 +661,7 @@ pub(crate) fn subscriptions_in<Tz: TimeZone + Copy>(
             .as_deref()
             .and_then(|model| change_of(&main_points, model, main_upt));
         let missing = match (learned_rates, main.as_deref()) {
-            (None, _) => Some(NO_FACTOR_REASON.to_string()),
+            (None, _) => Some(no_factor_reason(subject.company)),
             (Some(_), None) => Some(NO_PRICED_MODEL_REASON.to_string()),
             (Some(_), Some(_)) if main_upt.is_none() => Some(NO_PRICED_MODEL_REASON.to_string()),
             (Some(_), Some(_)) => None,
@@ -668,7 +690,7 @@ pub(crate) fn subscriptions_in<Tz: TimeZone + Copy>(
                 priced_main.insert(reference.clone());
                 let limit = match subject.company {
                     Company::Ollama => "month",
-                    Company::Anthropic | Company::OpenAI => "week",
+                    Company::Anthropic | Company::OpenAI | Company::Google => "week",
                 };
                 per_percent.push(per_percent_row(
                     subject,
@@ -684,7 +706,7 @@ pub(crate) fn subscriptions_in<Tz: TimeZone + Copy>(
                 ));
                 let session_factor = match subject.company {
                     Company::Ollama => None,
-                    Company::Anthropic | Company::OpenAI => rates.s,
+                    Company::Anthropic | Company::OpenAI | Company::Google => rates.s,
                 };
                 if let Some(session_factor) = session_factor {
                     let session = session_points(
@@ -951,7 +973,7 @@ fn points_for_main<Tz: TimeZone + Copy>(
     };
     let mut points = Vec::new();
     match subject.company {
-        Company::Anthropic | Company::OpenAI => {
+        Company::Anthropic | Company::OpenAI | Company::Google => {
             for hosted in windows {
                 let record = &hosted.record;
                 if record.account != subject.account
@@ -1049,7 +1071,7 @@ fn too_few_for_change(points: usize, period: &str) -> Option<String> {
 fn period_word(company: Company) -> &'static str {
     match company {
         Company::Ollama => "months",
-        Company::Anthropic | Company::OpenAI => "weeks",
+        Company::Anthropic | Company::OpenAI | Company::Google => "weeks",
     }
 }
 
@@ -1275,7 +1297,7 @@ fn sizes_of<Tz: TimeZone + Copy>(
 
 fn usage_groups(rows: &[UsageEntry], times_paid: Option<f64>) -> (Vec<UsageGroup>, UsageRow) {
     let mut groups = Vec::new();
-    for company in [Company::Anthropic, Company::OpenAI, Company::Ollama] {
+    for company in Company::ALL {
         let company_rows: Vec<UsageRow> = rows
             .iter()
             .filter(|entry| entry.company == company)
@@ -1290,8 +1312,8 @@ fn usage_groups(rows: &[UsageEntry], times_paid: Option<f64>) -> (Vec<UsageGroup
         });
     }
     // The total row counts only the subscriptions with a finished period of
-    // the range, as `Totals` does (decision 4 of M-2's fix).
-    let counted: Vec<&UsageEntry> = rows.iter().filter(|entry| entry.periods > 0).collect();
+    // the range and recorded work, as `Totals` does (decision 4 of M-2's fix).
+    let counted: Vec<&UsageEntry> = rows.iter().filter(|entry| entry.counted()).collect();
     let price_month = sum_opt(counted.iter().map(|entry| entry.row.price_month));
     let expired = sum_opt(counted.iter().map(|entry| entry.row.expired));
     let api = sum_opt(counted.iter().map(|entry| {
@@ -1304,6 +1326,7 @@ fn usage_groups(rows: &[UsageEntry], times_paid: Option<f64>) -> (Vec<UsageGroup
     }));
     let used_percent = used_share(&counted);
     let missing = total_missing(
+        rows,
         &counted,
         price_month,
         api,
@@ -1348,6 +1371,7 @@ fn used_share(counted: &[&UsageEntry]) -> Option<f64> {
 /// period of the range never marks the total, and a total whose figures are all
 /// there has no reason (decision 2 of M-2's fix 2).
 fn total_missing(
+    rows: &[UsageEntry],
     counted: &[&UsageEntry],
     price_month: Option<f64>,
     api: Option<f64>,
@@ -1356,9 +1380,14 @@ fn total_missing(
     times_paid: Option<f64>,
 ) -> Option<String> {
     // Nothing counted: every figure above is `None` for the same reason, so the
-    // total names that reason rather than a row's (fix 3 of M-2).
+    // total names that reason rather than a row's (fix 3 of M-2): finished
+    // periods of work that is not recorded, or no finished period at all.
     if counted.is_empty() {
-        return Some(subscriptions::NO_FINISHED_WEEK.to_string());
+        return Some(if rows.iter().any(|entry| entry.periods > 0) {
+            Missing::WorkNotRecorded.to_string()
+        } else {
+            subscriptions::NO_FINISHED_WEEK.to_string()
+        });
     }
     let reason = |figure: fn(&UsageRow) -> Option<f64>| {
         counted
@@ -1396,7 +1425,7 @@ fn times_paid_of_counted(entries: &[UsageEntry]) -> Option<f64> {
     let mut api = 0.0;
     let mut paid = 0.0;
     let mut counted = false;
-    for entry in entries.iter().filter(|entry| entry.periods > 0) {
+    for entry in entries.iter().filter(|entry| entry.counted()) {
         counted = true;
         let (row_api, _) = full_half(
             entry.row.api,
@@ -1416,7 +1445,7 @@ fn totals_of(
     currency: Option<&str>,
     times_paid: Option<f64>,
 ) -> Totals {
-    let counted: Vec<&UsageEntry> = usage.iter().filter(|entry| entry.periods > 0).collect();
+    let counted: Vec<&UsageEntry> = usage.iter().filter(|entry| entry.counted()).collect();
     let count = counted.len() as u32;
     let price_month = sum_opt(counted.iter().map(|entry| entry.row.price_month));
     let api_month = sum_opt(counted.iter().map(|entry| api_month_of(entry, currency)));
@@ -1495,7 +1524,7 @@ fn tokens_week_of<Tz: TimeZone + Copy>(
         .map(|subject| subject.company)
         .collect();
     let mut models: Vec<TokenModel> = Vec::new();
-    for company in [Company::Anthropic, Company::OpenAI, Company::Ollama] {
+    for company in Company::ALL {
         if !row_companies.contains(&company) {
             continue;
         }
@@ -1537,10 +1566,11 @@ fn tokens_week_of<Tz: TimeZone + Copy>(
         }
         let id = account_id(ctx, &subject.account);
         let Some(rates) = weekly.get(&subject.account) else {
+            let reason = no_factor_reason(subject.company);
             rows.push(TokensWeekRow {
                 id,
-                cells: missing_cells(NO_FACTOR_REASON),
-                missing: Some(NO_FACTOR_REASON.to_string()),
+                cells: missing_cells(&reason),
+                missing: Some(reason),
             });
             continue;
         };
@@ -3118,5 +3148,78 @@ mod tests {
         assert_eq!(page.usage_total.api, lb.api);
         assert_eq!(page.usage_total.times_paid, lb.times_paid);
         assert!(page.usage_total.api.is_some(), "{:?}", page.usage_total);
+    }
+
+    /// Google's work is not recorded, so its row has its price, use and unused
+    /// money and an unknown work value, never a 0; the totals, which set work
+    /// against price, leave it out.
+    #[test]
+    fn a_google_week_shows_its_use_and_stays_out_of_the_work_totals() {
+        let without = tiny();
+        let before =
+            subscriptions_in(&without.ctx(), &last_30_days(&without), &all()).expect("the page");
+
+        let mut tiny = tiny();
+        let google = crate::stats::tests::google_ref();
+        tiny.provider_subscriptions
+            .push(provider_subscription(&google, "GO", Some(22.0)));
+        tiny.history
+            .append(&WindowRecord {
+                account: google.clone(),
+                k: LimitKind::WeeklyAll,
+                m: None,
+                start: Some(utc("2026-11-02T10:00:00Z")),
+                end: utc("2026-11-09T10:00:00Z"),
+                final_percent: 40.0,
+                lost: Some(60.0),
+                last_sample: utc("2026-11-08T10:00:00Z"),
+                plan: None,
+                uncertain: false,
+                reset: false,
+                from: None,
+            })
+            .expect("Google's week");
+        let page = subscriptions_in(&tiny.ctx(), &last_30_days(&tiny), &all()).expect("the page");
+        let group = page
+            .usage
+            .iter()
+            .find(|group| group.company == Company::Google)
+            .expect("Google's group");
+        assert_eq!(group.count, 1);
+        assert_eq!(group.price_month, Some(22.0));
+        let row = group.rows.first().expect("Google's row");
+        assert_eq!(row.used_percent, Some(40.0), "{row:?}");
+        assert!(row.expired.is_some_and(|money| money > 0.0), "{row:?}");
+        assert_eq!(row.api, None, "an unknown value is never 0: {row:?}");
+        assert_eq!(row.times_paid, None, "{row:?}");
+        let reason = "seatswap does not record the work agy does";
+        assert_eq!(row.missing.as_deref(), Some(reason), "{row:?}");
+
+        assert_eq!(page.usage_total, before.usage_total);
+        assert_eq!(page.totals, before.totals);
+
+        let plan = page
+            .plans
+            .iter()
+            .find(|plan| plan.company == Company::Google)
+            .expect("Google's plan card");
+        assert_eq!(plan.missing.as_deref(), Some(reason), "{plan:?}");
+        let week = page
+            .tokens_week
+            .rows
+            .iter()
+            .find(|row| row.id == "sam@mail.example")
+            .expect("Google's week row");
+        assert_eq!(week.missing.as_deref(), Some(reason), "{week:?}");
+
+        // Google alone: the total names Google's reason, not a missing week.
+        let q = Query {
+            range: crate::stats::RangeKey::Days30,
+            accounts: vec!["sam@mail.example".to_string()],
+            host: None,
+        };
+        let alone = subscriptions_in(&tiny.ctx(), &last_30_days(&tiny), &q).expect("the page");
+        assert_eq!(alone.usage_total.missing.as_deref(), Some(reason));
+        assert_eq!(alone.usage_total.times_paid, None);
     }
 }

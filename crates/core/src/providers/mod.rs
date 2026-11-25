@@ -25,8 +25,7 @@ pub mod ollama;
 pub const CODEX_ORG: &str = "codex";
 /// The `org` of an Ollama [`AccountRef`]; its `acc` is the same name.
 pub const OLLAMA_ORG: &str = "ollama";
-/// The `org` of a Google [`AccountRef`]; its `acc` is the account's email. A
-/// Google reading is only shown: it is never recorded and no subscription.
+/// The `org` of a Google [`AccountRef`]; its `acc` is the account's email.
 pub const GOOGLE_ORG: &str = "google";
 
 #[derive(Debug, thiserror::Error)]

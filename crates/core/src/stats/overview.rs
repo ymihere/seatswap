@@ -85,8 +85,9 @@ pub struct ThisWeekTotals {
     /// at its week price ([`money_of`]'s `paid`), an OpenAI subscription's
     /// running week at its week price, and an Ollama month as
     /// `price_month × 12 / 52` in the settings' currency (documented rule). A
-    /// window without a price adds nothing; `None` while no listed window has
-    /// a price.
+    /// window without a price adds nothing, and Google's week stays out because
+    /// its work is in no record ([`Company::work_recorded`]); `None` while no
+    /// counted window has a price.
     pub paid: Option<f64>,
     /// A listed running window (a Claude account's running week, a provider row
     /// with a running window) has no price, so `paid` holds only the others'
@@ -401,7 +402,7 @@ pub(crate) fn overview_in<Tz: TimeZone + Copy>(
     // first: a company's blocked hours count in its own working hours only,
     // never summed with another's (decision P-2 5, 6).
     let mut blocked_by_company = Vec::new();
-    for company in [Company::Anthropic, Company::OpenAI, Company::Ollama] {
+    for company in Company::ALL {
         let company_rhythm = working_rhythm(ctx, range, company)?;
         if !company_rhythm.usd.iter().any(|usd| *usd > 0.0) {
             continue;
@@ -743,6 +744,8 @@ pub fn this_week_card<Tz: TimeZone + Copy>(
     for (account, (company, run)) in &provider_runs {
         let row = provider_row(&valuer, *company, account, run.as_ref());
         match row.week_paid {
+            // `paid` is what the recorded work is set against.
+            _ if !company.work_recorded() => {}
             Some(week_paid) => paid = Some(paid.unwrap_or(0.0) + week_paid),
             // A provider row without a running window has no week to price.
             None if run.is_some() => unpriced_window = true,
@@ -871,7 +874,7 @@ fn subscription_chip<Tz: TimeZone + Copy>(
     let account = value.account.as_ref()?;
     Some(match value.company {
         Company::Anthropic => account_id(ctx, account),
-        Company::OpenAI | Company::Ollama => account.acc.clone(),
+        Company::OpenAI | Company::Ollama | Company::Google => account.acc.clone(),
     })
 }
 
@@ -907,10 +910,7 @@ fn provider_row(
     run: Option<&ProviderRun>,
 ) -> ProviderRow {
     let Some(run) = run else {
-        let missing = match company {
-            Company::OpenAI | Company::Ollama => valuer.no_reading(account),
-            _ => crate::money::Missing::NoWeekReading,
-        };
+        let missing = valuer.no_reading(account);
         return ProviderRow {
             used: None,
             money: None,
@@ -3236,6 +3236,58 @@ mod tests {
             "the used share of the week's 23 EUR: {:?}",
             openai.money
         );
+    }
+
+    /// Google's running week has its row with use and money from its readings.
+    /// Its work is not recorded, so its week stays out of the sums that set the
+    /// recorded work against what was paid.
+    #[test]
+    fn a_google_row_shows_its_use_and_leaves_the_paid_share_alone() {
+        let before = {
+            let tiny = tiny();
+            this_week_card(&tiny.ctx(), &all()).expect("the This-week card")
+        };
+        let mut tiny = tiny();
+        let google = crate::stats::tests::google_ref();
+        tiny.provider_subscriptions
+            .push(provider_subscription(&google, "GO", Some(22.0)));
+        let q = all();
+        for (now_percent, found) in [(None, None), (Some(40.0), Some(40.0))] {
+            if let Some(percent) = now_percent {
+                tiny.history
+                    .append(&Sample {
+                        t: utc("2026-11-17T09:00:00Z"),
+                        account: google.clone(),
+                        src: Source::Statusline,
+                        l: vec![crate::history::LimitSample {
+                            k: LimitKind::WeeklyAll,
+                            m: None,
+                            p: percent,
+                            r: Some(utc("2026-11-23T10:00:00Z")),
+                            b: true,
+                        }],
+                    })
+                    .expect("Google's reading");
+            }
+            let card = this_week_card(&tiny.ctx(), &q).expect("the This-week card");
+            let row = card
+                .providers
+                .iter()
+                .find(|row| row.name == "GO")
+                .expect("the GO row");
+            assert_eq!(row.company, Company::Google);
+            assert_eq!(row.used, found);
+            match found {
+                Some(_) => assert!(close(row.money.expect("money"), 40.0 * percent_value(22.0))),
+                None => assert_eq!(
+                    row.money_missing.as_deref(),
+                    Some("no reading of this week's usage")
+                ),
+            }
+            assert_eq!(card.totals.paid, before.totals.paid);
+            assert_eq!(card.totals.paid_partial, before.totals.paid_partial);
+            assert_eq!(card.totals.used_of_paid, before.totals.used_of_paid);
+        }
     }
 
     /// Each OpenAI login gets its own This-week row, summing its own records

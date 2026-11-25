@@ -543,19 +543,29 @@ pub fn price_key(provider: &str, model_id: &str) -> String {
     format!("{provider}/{model_id}")
 }
 
-/// The company a token record's model belongs to (spec §11.5): Anthropic's
-/// plan, OpenAI (Codex), or Ollama's cloud (DeepSeek Harness and flash
-/// workers). An OpenAI or Ollama record belongs to its company and to no
-/// Claude account.
+/// The company a subscription or a token record's model belongs to (spec
+/// §11.5): Anthropic's plan, OpenAI (Codex), Ollama's cloud (DeepSeek Harness
+/// and flash workers), or Google (the Antigravity CLI `agy`). An OpenAI or
+/// Ollama record belongs to its company and to no Claude account; no record is
+/// Google's ([`Company::work_recorded`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Company {
     Anthropic,
     OpenAI,
     Ollama,
+    Google,
 }
 
 impl Company {
+    /// Every company, in the order the pages list them.
+    pub const ALL: [Company; 4] = [
+        Company::Anthropic,
+        Company::OpenAI,
+        Company::Ollama,
+        Company::Google,
+    ];
+
     /// The company of a model id: the one rule, which [`model_price_key`]
     /// and [`is_plan_model`] follow.
     ///
@@ -569,12 +579,13 @@ impl Company {
     }
 
     /// The company of an account reference: the org `codex` is OpenAI's, the
-    /// org `ollama` is Ollama's, and every other org (a Claude organization id)
-    /// is Anthropic's.
+    /// org `ollama` is Ollama's, the org `google` is Google's, and every other
+    /// org (a Claude organization id) is Anthropic's.
     pub fn of_account(account: &AccountRef) -> Company {
         match account.org.as_str() {
             crate::providers::CODEX_ORG => Company::OpenAI,
             crate::providers::OLLAMA_ORG => Company::Ollama,
+            crate::providers::GOOGLE_ORG => Company::Google,
             // A Claude organization id is a 36-character UUID.
             _ => Company::Anthropic,
         }
@@ -586,16 +597,29 @@ impl Company {
             Company::Anthropic => "Anthropic",
             Company::OpenAI => "OpenAI",
             Company::Ollama => "Ollama",
+            Company::Google => "Google",
         }
     }
 
-    /// The models.dev list ([`PRICE_PROVIDERS`]) the company's models are
-    /// priced from.
+    /// Whether seatswap records the work done on the company's subscriptions as
+    /// token records. It has none of agy's, so what a Google subscription's use
+    /// was worth is unknown ([`Missing::WorkNotRecorded`]), never 0, and a
+    /// figure that sets work against its price leaves Google out.
+    pub fn work_recorded(&self) -> bool {
+        match self {
+            Company::Anthropic | Company::OpenAI | Company::Ollama => true,
+            Company::Google => false,
+        }
+    }
+
+    /// The name of the company's price list on models.dev. Google's is not
+    /// read ([`PRICE_PROVIDERS`]): no record is priced from it.
     pub fn price_list(&self) -> &'static str {
         match self {
             Company::Anthropic => "anthropic",
             Company::OpenAI => "openai",
             Company::Ollama => "ollama-cloud",
+            Company::Google => "google",
         }
     }
 }
@@ -1050,12 +1074,15 @@ pub enum Missing {
     /// Ollama's reading names no credits month, so there is no allowance to
     /// take a share of.
     NoMonthlyAllowance,
-    /// No running weekly window of an OpenAI subscription: there is no
-    /// reading of this week's usage.
+    /// No running weekly window of an OpenAI or Google subscription: there is
+    /// no reading of this week's usage.
     NoWeekReading,
     /// No running month of an Ollama subscription: there is no reading of this
     /// month's usage.
     NoMonthReading,
+    /// The subscription's work is in no token record
+    /// ([`Company::work_recorded`]), so its worth is unknown.
+    WorkNotRecorded,
 }
 
 impl std::fmt::Display for Missing {
@@ -1082,6 +1109,7 @@ impl std::fmt::Display for Missing {
             Missing::NoMonthlyAllowance => f.write_str("no monthly allowance in Ollama's reading"),
             Missing::NoWeekReading => f.write_str("no reading of this week's usage"),
             Missing::NoMonthReading => f.write_str("no reading of this month's usage"),
+            Missing::WorkNotRecorded => f.write_str("seatswap does not record the work agy does"),
         }
     }
 }
@@ -1701,6 +1729,8 @@ impl Valuer {
                 Err(_) => return,
             },
             Company::Ollama => (ollama_subscription(), monthly_credits()),
+            // No model id is Google's.
+            Company::Google => return,
         };
         let Some(index) = self.window_holding(&account, &kind, record.t) else {
             return;
@@ -1720,8 +1750,8 @@ impl Valuer {
     /// subscription at most, as the records a finished window would have: of
     /// every window the readings opened and no finished record closed, the
     /// account's one with the newest reading, when its reset (`end`) lies after
-    /// `now`. A Claude account's week and an OpenAI subscription's `weekly_all`
-    /// week count alike; Ollama's month is not a week and stays out. A reading
+    /// `now`. A Claude account's week and an OpenAI or Google subscription's
+    /// `weekly_all` week count alike; Ollama's month is not a week and stays out. A reading
     /// of another host whose clock runs a little ahead still counts. A window
     /// the readings opened before an early reset that moved the reset time has
     /// an older newest reading than the window after the reset, so it is never
@@ -1909,6 +1939,11 @@ impl Valuer {
                 }
             },
             Company::Ollama => (Some(ollama_subscription()), false),
+            // No model id is Google's.
+            Company::Google => {
+                account_missing = Some(Missing::WorkNotRecorded);
+                (None, false)
+            }
         };
         let usd = api_usd(record, &self.prices);
         let (api, api_currency, api_missing) = match usd {
@@ -1945,7 +1980,9 @@ impl Valuer {
                 (Some(_), None) => (None, Some(account_missing.unwrap_or(Missing::NoAccount))),
                 (Some(usd), Some(account)) => {
                     let kind = match company {
-                        Company::Anthropic | Company::OpenAI => LimitKind::WeeklyAll,
+                        Company::Anthropic | Company::OpenAI | Company::Google => {
+                            LimitKind::WeeklyAll
+                        }
                         Company::Ollama => monthly_credits(),
                     };
                     match self.subscription(account, &kind, record.t, usd) {
@@ -1975,7 +2012,7 @@ impl Valuer {
     pub(crate) fn no_reading(&self, account: &AccountRef) -> Missing {
         match Company::of_account(account) {
             Company::Anthropic => Missing::NoReading,
-            Company::OpenAI => Missing::NoWeekReading,
+            Company::OpenAI | Company::Google => Missing::NoWeekReading,
             Company::Ollama if self.month_windows(account).is_empty() => {
                 Missing::NoMonthlyAllowance
             }
@@ -5378,6 +5415,8 @@ pub(crate) mod tests {
             // Neither Ollama form: priced as `openai`, so OpenAI's.
             ("gpt-6.1-cloud", Company::OpenAI),
             (":cloud", Company::OpenAI),
+            // No record of agy's work is written yet, so no id is Google's.
+            ("gemini-4-argon", Company::OpenAI),
         ] {
             assert_eq!(Company::of_model(model), company, "{model}");
             assert_eq!(
@@ -5389,6 +5428,11 @@ pub(crate) mod tests {
         assert_eq!(Company::Anthropic.name(), "Anthropic");
         assert_eq!(Company::OpenAI.name(), "OpenAI");
         assert_eq!(Company::Ollama.name(), "Ollama");
+        assert_eq!(Company::Google.name(), "Google");
+        assert_eq!(
+            serde_json::to_value(Company::ALL).unwrap(),
+            serde_json::json!(["anthropic", "openai", "ollama", "google"])
+        );
     }
 
     #[test]
@@ -5397,6 +5441,7 @@ pub(crate) mod tests {
         for (org, company) in [
             (crate::providers::CODEX_ORG, Company::OpenAI),
             (crate::providers::OLLAMA_ORG, Company::Ollama),
+            (crate::providers::GOOGLE_ORG, Company::Google),
         ] {
             let account = AccountRef {
                 acc: "0f3a6c2e-7b1d-4e9a-8c5f-2d4b6a8e0c13".to_string(),

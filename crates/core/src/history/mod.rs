@@ -164,12 +164,12 @@ impl AccountRef {
         }
     }
 
-    /// Whether this is a Claude account's reference. Codex's and Ollama's
-    /// readings are stored beside Claude's with `org` [`crate::providers::CODEX_ORG`]
-    /// or [`crate::providers::OLLAMA_ORG`]; a Claude organization id is a
-    /// 36-character UUID, so those names cannot clash with one.
+    /// Whether this is a Claude account's reference. The other companies'
+    /// readings are stored beside Claude's with a provider's name as `org`; a
+    /// Claude organization id is a 36-character UUID, so those names cannot
+    /// clash with one ([`crate::money::Company::of_account`]).
     pub fn is_claude(&self) -> bool {
-        self.org != crate::providers::CODEX_ORG && self.org != crate::providers::OLLAMA_ORG
+        crate::money::Company::of_account(self) == crate::money::Company::Anthropic
     }
 }
 
@@ -1367,6 +1367,13 @@ mod tests {
         }
     }
 
+    fn google_account() -> AccountRef {
+        AccountRef {
+            acc: "sam@mail.example".to_string(),
+            org: crate::providers::GOOGLE_ORG.to_string(),
+        }
+    }
+
     /// The one place the Claude filter lives: `read_claude` and
     /// `finished_claude_windows` keep a Claude account's records and an event
     /// that names no account, while `read` and `finished_windows` keep every
@@ -1378,6 +1385,7 @@ mod tests {
         let at = utc("2026-11-14T10:00:00Z");
         let claude = atlas_account();
         let codex = codex_account();
+        let google = google_account();
         let sample = |account: &AccountRef| Sample {
             t: at,
             account: account.clone(),
@@ -1414,10 +1422,13 @@ mod tests {
         };
         history.append(&sample(&claude)).unwrap();
         history.append(&sample(&codex)).unwrap();
+        history.append(&sample(&google)).unwrap();
         history.append(&window(&claude)).unwrap();
         history.append(&window(&codex)).unwrap();
+        history.append(&window(&google)).unwrap();
         history.append(&blocked(claude.clone())).unwrap();
         history.append(&blocked(codex)).unwrap();
+        history.append(&blocked(google)).unwrap();
         history
             .append(&Event {
                 t: at,
@@ -1426,7 +1437,7 @@ mod tests {
             .unwrap();
 
         let samples = history.read::<Sample>(&wide_range(), &Hosts::All).unwrap();
-        assert_eq!(samples.records.len(), 2, "read keeps every line");
+        assert_eq!(samples.records.len(), 3, "read keeps every line");
         let claude_samples = history
             .read_claude::<Sample>(&wide_range(), &Hosts::All)
             .unwrap();
@@ -1438,7 +1449,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             windows.records.len(),
-            2,
+            3,
             "finished_windows keeps every line"
         );
         let claude_windows = history
@@ -1448,14 +1459,14 @@ mod tests {
         assert_eq!(claude_windows.records[0].record.account, claude);
 
         let events = history.read::<Event>(&wide_range(), &Hosts::All).unwrap();
-        assert_eq!(events.records.len(), 3, "read keeps every line");
+        assert_eq!(events.records.len(), 4, "read keeps every line");
         let claude_events = history
             .read_claude::<Event>(&wide_range(), &Hosts::All)
             .unwrap();
         assert_eq!(
             claude_events.records.len(),
             2,
-            "the Claude event and the account-less one stay; the provider's goes"
+            "the Claude event and the account-less one stay; the providers' go"
         );
         assert!(claude_events.records.iter().any(|hosted| matches!(
             &hosted.record.kind,

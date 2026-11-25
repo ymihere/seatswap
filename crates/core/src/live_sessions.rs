@@ -268,7 +268,7 @@ impl Values {
     }
 
     /// Both halves missing with the same reason, and the settings' currency.
-    fn missing(reason: &str, settings: &Settings) -> Values {
+    pub(crate) fn missing(reason: &str, settings: &Settings) -> Values {
         Values {
             api: None,
             api_currency: None,

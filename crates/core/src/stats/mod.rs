@@ -445,7 +445,7 @@ pub fn account_weeks<Tz: TimeZone + Copy>(
 /// per account and calendar week: every window whose midpoint falls in that
 /// week is kept in `windows`, oldest first; `used` sums their use and `window`
 /// is the last. The windows are every company's: a Claude account's week and an
-/// OpenAI subscription's `weekly_all` week (an Ollama subscription counts per
+/// OpenAI or Google subscription's `weekly_all` week (an Ollama subscription counts per
 /// month, [`subscription_months`]). A page that serves Claude's accounts alone
 /// leaves the provider weeks out by [`Company::of_account`].
 pub(crate) fn account_weeks_valued<Tz: TimeZone + Copy>(
@@ -1219,8 +1219,9 @@ pub struct Empty {
 /// avoidable hours are auto-burn's. OpenAI's `session` and `weekly_all` blocks
 /// count only while the blocked subscription was the one in use on the block's
 /// host (the `providerSwitch` rule of decision P-2 2); Ollama has one
-/// subscription, so its `monthly_credits` block always counts. No sum across
-/// companies.
+/// subscription, so its `monthly_credits` block always counts, and Google's
+/// readings are of the account agy was signed in to, so its `session` and
+/// `weekly_all` blocks count too. No sum across companies.
 pub fn blocked_spans<Tz: TimeZone + Copy>(
     ctx: &Ctx<Tz>,
     range: &Range,
@@ -1290,7 +1291,7 @@ pub fn blocked_spans<Tz: TimeZone + Copy>(
                         points.extend(timeline.changes_between(start, end));
                     }
                 }
-                Company::Ollama => {}
+                Company::Ollama | Company::Google => {}
             }
             points.push(end);
             points.sort_unstable();
@@ -1324,7 +1325,7 @@ pub fn blocked_spans<Tz: TimeZone + Copy>(
                             }
                         }
                     }
-                    Company::Ollama => true,
+                    Company::Ollama | Company::Google => true,
                 };
                 if !in_use {
                     continue;
@@ -1364,11 +1365,13 @@ pub fn blocked_spans<Tz: TimeZone + Copy>(
 
 /// Whether a limit of `company` blocks the whole account when it is at 100 %
 /// (decision P-2 5): every kind for Claude (today's rule), the 5 h session and
-/// the week of all models for OpenAI, Ollama's credits month.
+/// the week of all models for OpenAI and Google, Ollama's credits month.
 fn blocks_whole_account(company: Company, kind: &LimitKind) -> bool {
     match company {
         Company::Anthropic => true,
-        Company::OpenAI => matches!(kind, LimitKind::Session | LimitKind::WeeklyAll),
+        Company::OpenAI | Company::Google => {
+            matches!(kind, LimitKind::Session | LimitKind::WeeklyAll)
+        }
         Company::Ollama => matches!(
             kind,
             LimitKind::Other(name) if name == "monthly_credits"
@@ -2917,6 +2920,14 @@ pub(crate) mod tests {
         AccountRef {
             acc: "0f3a6c2e-7b1d-4e9a-8c5f-2d4b6a8e0c13".to_string(),
             org: crate::providers::CODEX_ORG.to_string(),
+        }
+    }
+
+    /// The Google account agy is signed in to.
+    pub(crate) fn google_ref() -> AccountRef {
+        AccountRef {
+            acc: "sam@mail.example".to_string(),
+            org: crate::providers::GOOGLE_ORG.to_string(),
         }
     }
 
