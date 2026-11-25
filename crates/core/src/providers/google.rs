@@ -1,7 +1,9 @@
 //! Google's usage, as the Antigravity CLI (`agy`) hands it to its status line
 //! command (spec §7.9). seatswap asks Google nothing and reads no Google login:
 //! `seatswap statusline` gets the payload on standard input and keeps the
-//! account's numbers in `<data>/google.json`, and the pop-up's card shows them.
+//! account's numbers in `<data>/google.json`. The pop-up's card shows them, and
+//! the Gemini limits are recorded in the history like the other providers'
+//! readings ([`GoogleReading::recorded`]).
 //!
 //! Before the first reading, [`agy_link`] tells whether `agy` is installed and
 //! whether its status line already runs seatswap; [`connect_agy`] writes that
@@ -17,7 +19,7 @@ use serde_json::{json, Map, Value};
 use crate::api::{mark_highest_active, Limit, LimitKind, Severity, Usage};
 use crate::claude_settings;
 use crate::feed;
-use crate::history::AccountRef;
+use crate::history::{same_reset, AccountRef};
 use crate::paths::{AgyPaths, AppPaths};
 
 use super::{ProviderError, ProviderReading, GOOGLE_ORG};
@@ -47,11 +49,74 @@ pub struct GoogleFeed {
     pub buckets: Vec<GoogleBucket>,
 }
 
+impl GoogleBucket {
+    /// Whether the two say the same. An unused limit's reset moves with the
+    /// clock, so it says nothing while nothing is used.
+    fn same(&self, other: &GoogleBucket) -> bool {
+        self.id == other.id
+            && self.percent == other.percent
+            && self.problem == other.problem
+            && (self.resets_at == other.resets_at || self.percent == Some(0.0))
+    }
+
+    /// Whether `said`, read at `at`, is an older number of the limit than this
+    /// stored one: less use of the same window, or a window that ends earlier
+    /// with no more use or that had already ended. An open `agy` session keeps
+    /// saying the numbers of its own last answer while another one works on.
+    fn outdates(&self, said: &GoogleBucket, at: DateTime<Utc>) -> bool {
+        let (Some(used), Some(said_used)) = (self.percent, said.percent) else {
+            return false;
+        };
+        let (Some(reset), Some(said_reset)) = (self.resets_at, said.resets_at) else {
+            return false;
+        };
+        if same_reset(reset, said_reset) {
+            return said_used < used;
+        }
+        said_reset < reset && (said_used <= used || said_reset <= at)
+    }
+}
+
+impl GoogleFeed {
+    /// Keep the numbers of `stored` that this feed only has older ones of.
+    /// Another account's or another plan's numbers are never compared.
+    fn keep_newer(&mut self, stored: &GoogleFeed) {
+        if self.email != stored.email || self.plan != stored.plan {
+            return;
+        }
+        let at = self.at;
+        for bucket in &mut self.buckets {
+            let kept = stored
+                .buckets
+                .iter()
+                .find(|kept| kept.id == bucket.id && kept.outdates(bucket, at));
+            if let Some(kept) = kept {
+                *bucket = kept.clone();
+            }
+        }
+    }
+
+    /// Whether the two say the same of the same account.
+    fn same(&self, other: &GoogleFeed) -> bool {
+        self.email == other.email
+            && self.plan == other.plan
+            && self.buckets.len() == other.buckets.len()
+            && self
+                .buckets
+                .iter()
+                .zip(&other.buckets)
+                .all(|(one, two)| one.same(two))
+    }
+}
+
 /// A stored feed as a reading: when `agy` said it, and what of it is not a
 /// limit row (a window that ended since, a bucket that could not be read).
 #[derive(Debug, Clone, PartialEq)]
 pub struct GoogleReading {
     pub reading: ProviderReading,
+    /// What the history records: the account's Gemini session and week as they
+    /// were at `at`, whatever has ended since. No usage without either.
+    pub recorded: ProviderReading,
     pub at: DateTime<Utc>,
     pub notes: Vec<String>,
 }
@@ -83,20 +148,14 @@ pub fn feed_from_payload(raw: &Value, now: DateTime<Utc>) -> Option<GoogleFeed> 
     })
 }
 
-/// Write `<data>/google.json` under the feed's own rule. Returns whether it wrote.
+/// Write `<data>/google.json` under the feed's own rule, without going back to
+/// an older number. Returns whether it wrote.
 pub fn write_if_due(app: &AppPaths, feed: &GoogleFeed) -> io::Result<bool> {
-    feed::write_file_if_due(
-        app,
-        &app.google_file(),
-        feed,
-        feed.at,
-        |stored: &GoogleFeed| {
-            let same = stored.email == feed.email
-                && stored.plan == feed.plan
-                && stored.buckets == feed.buckets;
-            (stored.at, same)
-        },
-    )
+    let path = app.google_file();
+    feed::write_file_if_due(app, &path, feed.clone(), feed.at, |stored, feed| {
+        feed.keep_newer(stored);
+        (stored.at, stored.same(feed))
+    })
 }
 
 /// The last reading `agy` left, at `now`; `None` when there is no account yet.
@@ -182,12 +241,47 @@ pub fn connect_agy(agy: &Agy) -> Result<(), ProviderError> {
     }
 }
 
-/// The feed as limits. A window whose reset has passed holds no usage any more
-/// and nobody has said what the next one holds, so it is a note, not a row.
+/// The feed as a reading at `now`, and as what the history records of it.
 pub fn reading(feed: GoogleFeed, now: DateTime<Utc>) -> GoogleReading {
+    let (limits, notes) = limits_at(&feed.buckets, now);
+    let (mut recorded, _) = limits_at(&feed.buckets, feed.at);
+    recorded.retain(|limit| matches!(limit.kind, LimitKind::Session | LimitKind::WeeklyAll));
+    let recorded = (!recorded.is_empty()).then(|| usage_of(recorded));
+    let of = |usage: Option<Usage>| ProviderReading {
+        account: AccountRef {
+            acc: feed.email.clone(),
+            org: GOOGLE_ORG.to_string(),
+        },
+        plan: feed.plan.clone(),
+        usage,
+        credits: None,
+        spend_24h: None,
+        hours: None,
+    };
+    GoogleReading {
+        reading: of(Some(usage_of(limits))),
+        recorded: of(recorded),
+        at: feed.at,
+        notes,
+    }
+}
+
+fn usage_of(mut limits: Vec<Limit>) -> Usage {
+    mark_highest_active(&mut limits);
+    Usage {
+        limits,
+        extra_usage_enabled: false,
+        warnings: Vec::new(),
+    }
+}
+
+/// The buckets as limits at `now`. A window whose reset has passed holds no
+/// usage any more and nobody has said what the next one holds, so it is a note,
+/// not a row.
+fn limits_at(buckets: &[GoogleBucket], now: DateTime<Utc>) -> (Vec<Limit>, Vec<String>) {
     let mut limits = Vec::new();
     let mut notes = Vec::new();
-    for bucket in feed.buckets {
+    for bucket in buckets {
         let kind = limit_of(&bucket.id);
         let Some(percent) = bucket.percent else {
             let reason = bucket.problem.as_deref().unwrap_or("no percent");
@@ -210,26 +304,7 @@ pub fn reading(feed: GoogleFeed, now: DateTime<Utc>) -> GoogleReading {
             is_active: false,
         });
     }
-    mark_highest_active(&mut limits);
-    GoogleReading {
-        reading: ProviderReading {
-            account: AccountRef {
-                acc: feed.email,
-                org: GOOGLE_ORG.to_string(),
-            },
-            plan: feed.plan,
-            usage: Some(Usage {
-                limits,
-                extra_usage_enabled: false,
-                warnings: Vec::new(),
-            }),
-            credits: None,
-            spend_24h: None,
-            hours: None,
-        },
-        at: feed.at,
-        notes,
-    }
+    (limits, notes)
 }
 
 /// A limit's name in a note and in the status line.
@@ -535,6 +610,121 @@ mod tests {
         assert!(write_if_due(&app, &other).unwrap());
         let read_back = read(&app, now()).unwrap().unwrap();
         assert_eq!(read_back.reading.account.acc, "lab@mail.example");
+    }
+
+    /// A feed of one bucket, `seconds` after [`now`].
+    fn one_bucket(seconds: i64, id: &str, percent: f64, reset: &str) -> GoogleFeed {
+        GoogleFeed {
+            at: now() + chrono::Duration::seconds(seconds),
+            email: "sam@mail.example".to_string(),
+            plan: Some("Google AI Pro".to_string()),
+            buckets: vec![GoogleBucket {
+                id: id.to_string(),
+                percent: Some(percent),
+                resets_at: Some(reset.parse().unwrap()),
+                problem: None,
+            }],
+        }
+    }
+
+    fn stored_percent(app: &AppPaths) -> Option<f64> {
+        let stored = feed::read_file::<GoogleFeed>(&app.google_file())
+            .unwrap()
+            .unwrap();
+        stored.buckets[0].percent
+    }
+
+    #[test]
+    fn an_unused_limits_moving_reset_is_no_change() {
+        let dir = tempdir().unwrap();
+        let app = AppPaths::at(&dir.path().join("data"));
+        for (seconds, reset, wrote) in [
+            (0, "2026-11-25T17:00:00Z", true),
+            (1, "2026-11-25T17:00:01Z", false),
+            (9, "2026-11-25T17:00:09Z", false),
+            (10, "2026-11-25T17:00:10Z", true),
+        ] {
+            let feed = one_bucket(seconds, "3p-5h", 0.0, reset);
+            assert_eq!(write_if_due(&app, &feed).unwrap(), wrote, "{seconds} s");
+        }
+        // Once it is used, its reset is a change like any other.
+        let used = one_bucket(11, "3p-5h", 0.4, "2026-11-25T17:00:11Z");
+        assert!(write_if_due(&app, &used).unwrap());
+    }
+
+    #[test]
+    fn an_older_sessions_numbers_never_replace_newer_ones() {
+        let dir = tempdir().unwrap();
+        let app = AppPaths::at(&dir.path().join("data"));
+        let week = "2026-11-30T07:50:32Z";
+        for (seconds, percent, reset, stored) in [
+            (0, 30.0, week, 30.0),
+            // The same window, said by a session that has not asked since.
+            (20, 12.0, week, 30.0),
+            (40, 31.0, "2026-11-30T07:50:50Z", 31.0),
+            // A window that starts later is the newer one.
+            (60, 2.0, "2026-12-07T07:50:32Z", 2.0),
+            // The one before it, and an unused one from before its start.
+            (80, 31.0, "2026-11-25T12:01:10Z", 2.0),
+            (100, 0.0, "2026-12-02T12:00:00Z", 2.0),
+            // More use before an earlier reset is news, not an old number.
+            (120, 5.0, "2026-12-03T12:00:00Z", 5.0),
+        ] {
+            write_if_due(&app, &one_bucket(seconds, "gemini-weekly", percent, reset)).unwrap();
+            assert_eq!(stored_percent(&app), Some(stored), "at {seconds} s");
+        }
+        // A held-back number does not hold back the time it was said at.
+        let stored = read(&app, now()).unwrap().unwrap();
+        assert_eq!(stored.at, now() + chrono::Duration::seconds(120));
+
+        // Another plan's and another account's numbers are taken whole.
+        let mut ultra = one_bucket(140, "gemini-weekly", 1.0, "2026-12-03T12:00:00Z");
+        ultra.plan = Some("Google AI Ultra".to_string());
+        write_if_due(&app, &ultra).unwrap();
+        assert_eq!(stored_percent(&app), Some(1.0));
+        let mut other = one_bucket(160, "gemini-weekly", 0.5, "2026-12-03T12:00:00Z");
+        other.email = "lab@mail.example".to_string();
+        write_if_due(&app, &other).unwrap();
+        assert_eq!(stored_percent(&app), Some(0.5));
+    }
+
+    #[test]
+    fn what_is_recorded_is_what_agy_said_when_it_said_it() {
+        let feed = feed_from_payload(&payload(), now()).unwrap();
+        // Three hours later the 5h window has ended: the card has a note, the
+        // record still has the number of the time it was said.
+        let read = reading(feed, now() + chrono::Duration::hours(3));
+        assert_eq!(
+            read.notes,
+            vec![
+                "5h Claude/GPT was reset since the last reading",
+                "5h was reset since the last reading"
+            ]
+        );
+        let recorded = read.recorded;
+        assert_eq!(recorded.account, read.reading.account);
+        assert_eq!(recorded.plan.as_deref(), Some("Pro"));
+        let limits: Vec<(LimitKind, f64, bool)> = recorded
+            .usage
+            .unwrap()
+            .limits
+            .into_iter()
+            .map(|limit| (limit.kind, limit.percent, limit.is_active))
+            .collect();
+        assert_eq!(
+            limits,
+            vec![
+                (LimitKind::Session, 50.0, true),
+                (LimitKind::WeeklyAll, 25.0, false)
+            ]
+        );
+
+        // A window that had ended when agy said it is not a reading of it, and
+        // a feed without a Gemini limit records no usage.
+        let ended = one_bucket(0, "gemini-5h", 40.0, "2026-11-25T11:00:00Z");
+        assert_eq!(reading(ended, now()).recorded.usage, None);
+        let other = one_bucket(0, "3p-weekly", 40.0, "2026-11-30T11:00:00Z");
+        assert_eq!(reading(other, now()).recorded.usage, None);
     }
 
     #[test]

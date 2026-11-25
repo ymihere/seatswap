@@ -77,7 +77,8 @@ pub struct Feed {
 /// The file is seatswap's own cache of the last numbers, never a source of
 /// truth: a file that does not parse is simply overwritten by this call.
 pub fn write_if_due(app: &AppPaths, feed: &Feed) -> io::Result<bool> {
-    write_file_if_due(app, &app.feed_file(), feed, feed.at, |stored: &Feed| {
+    let path = app.feed_file();
+    write_file_if_due(app, &path, feed.clone(), feed.at, |stored, feed| {
         let same = stored.five_hour == feed.five_hour
             && stored.seven_day == feed.seven_day
             && stored.session == feed.session
@@ -91,16 +92,17 @@ pub fn write_if_due(app: &AppPaths, feed: &Feed) -> io::Result<bool> {
 /// read at `at`, when `stored_state` (the stored file's own time, and whether its
 /// numbers are the same) says they changed, when the file is at least 10 s older
 /// than `at`, when the clock was set back, or when the file does not parse.
+/// `stored_state` may first keep a stored number the value must not replace.
 pub(crate) fn write_file_if_due<T: Serialize + DeserializeOwned>(
     app: &AppPaths,
     path: &Path,
-    value: &T,
+    mut value: T,
     at: DateTime<Utc>,
-    stored_state: impl FnOnce(&T) -> (DateTime<Utc>, bool),
+    stored_state: impl FnOnce(&T, &mut T) -> (DateTime<Utc>, bool),
 ) -> io::Result<bool> {
     let write = match read_file::<T>(path) {
         Ok(Some(stored)) => {
-            let (stored_at, same) = stored_state(&stored);
+            let (stored_at, same) = stored_state(&stored, &mut value);
             let old_enough = at.signed_duration_since(stored_at)
                 >= chrono::Duration::seconds(REWRITE_AFTER_SECS);
             // A stored time later than this reading means the clock was set
@@ -117,7 +119,7 @@ pub(crate) fn write_file_if_due<T: Serialize + DeserializeOwned>(
         return Ok(false);
     }
     atomic::ensure_private_dir(&app.data_dir)?;
-    let bytes = serde_json::to_vec_pretty(value)
+    let bytes = serde_json::to_vec_pretty(&value)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     write_atomic(path, &bytes, Access::Private)?;
     Ok(true)

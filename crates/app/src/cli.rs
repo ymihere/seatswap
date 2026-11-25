@@ -688,7 +688,7 @@ fn statusline_line(cli: &Cli, stdin: &[u8], now: DateTime<Utc>) -> Result<String
     let payload = statusline::parse(stdin);
     // `agy` runs the same command; its payload holds a Google account's numbers
     // and nothing of Claude Code's.
-    if let Some(line) = statusline::google_line(&app, &file.settings, &payload, now)? {
+    if let Some(line) = statusline::google_line(&app, &payload, now)? {
         return Ok(line);
     }
     if let Err(reason) = statusline::publish_feed(&app, &file.settings, &payload, now) {
@@ -3439,7 +3439,7 @@ pub(crate) mod tests {
         let now = Utc::now();
 
         let line = statusline_output(&fixture.cli(Command::Statusline), AGY_PAYLOAD, now);
-        assert_eq!(line, "Google Pro · week 6%");
+        assert_eq!(line, "Pro · week 6%");
         assert!(app.google_file().is_file());
         assert!(!app.feed_file().exists());
         assert!(!app.statusline_keys_file().exists());
@@ -3455,8 +3455,28 @@ pub(crate) mod tests {
         assert_eq!(fs::read(app.google_file()).expect("the file"), before);
     }
 
+    /// The line names the plan as agy does, which says whose it is.
     #[test]
-    fn no_google_file_while_the_card_is_off() {
+    fn agys_line_names_the_plan_as_agy_does() {
+        let fixture = Fixture::new();
+        fixture.add_account(0);
+        let text = std::str::from_utf8(AGY_PAYLOAD).expect("the payload");
+        for (plan, line) in [
+            (r#""plan_tier":"Google AI Pro","#, "Google AI Pro · week 6%"),
+            ("", "Google · week 6%"),
+        ] {
+            let payload = text.replace(r#""plan_tier":"Pro","#, plan);
+            let cli = fixture.cli(Command::Statusline);
+            assert_eq!(
+                statusline_output(&cli, payload.as_bytes(), Utc::now()),
+                line
+            );
+        }
+    }
+
+    /// The card's switch only hides the card, as the other providers' do.
+    #[test]
+    fn the_google_file_is_kept_while_the_card_is_off() {
         let fixture = Fixture::new();
         fixture.add_account(0);
         let app = AppPaths::at(&fixture.data_dir);
@@ -3467,8 +3487,8 @@ pub(crate) mod tests {
         fs::write(&path, file.to_string()).expect("accounts.json");
 
         let line = statusline_output(&fixture.cli(Command::Statusline), AGY_PAYLOAD, Utc::now());
-        assert_eq!(line, "Google Pro · week 6%");
-        assert!(!app.google_file().exists());
+        assert_eq!(line, "Pro · week 6%");
+        assert!(app.google_file().is_file());
     }
 
     #[test]

@@ -252,12 +252,11 @@ pub(crate) fn publish_feed(
 }
 
 /// `agy`'s payload (spec §7.9): keep the Google account's numbers in
-/// `google.json` while the Google card is on, and answer with the line `agy`
-/// shows: the plan and each limit's use. `None` when the payload is not `agy`'s.
+/// `google.json`, and answer with the line `agy` shows: the plan as `agy` names
+/// it ("Google AI Pro") and each limit's use. `None` when the payload is not `agy`'s.
 /// Without an account the line is empty.
 pub(crate) fn google_line(
     app: &AppPaths,
-    settings: &Settings,
     payload: &Payload,
     now: DateTime<Utc>,
 ) -> Result<Option<String>, String> {
@@ -267,15 +266,10 @@ pub(crate) fn google_line(
     let Some(feed) = google::feed_from_payload(&payload.raw, now) else {
         return Ok(Some(String::new()));
     };
-    if settings.google_card {
-        google::write_if_due(app, &feed)
-            .map_err(|error| format!("cannot write {}: {error}", app.google_file().display()))?;
-    }
+    google::write_if_due(app, &feed)
+        .map_err(|error| format!("cannot write {}: {error}", app.google_file().display()))?;
     let read = google::reading(feed, now);
-    let mut parts = vec![match &read.reading.plan {
-        Some(plan) => format!("Google {plan}"),
-        None => "Google".to_string(),
-    }];
+    let mut parts = vec![read.reading.plan.unwrap_or_else(|| "Google".to_string())];
     for limit in read.reading.usage.iter().flat_map(|usage| &usage.limits) {
         parts.push(format!(
             "{} {}",
