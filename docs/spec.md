@@ -252,7 +252,7 @@ They use the `keyring` crate, with service `seatswap` and the account `id` as th
 
 On Windows, Codex's saved logins are always private files in the same `secrets` folder, even while the keyring is in use and Claude logins stay in Credential Manager (W-1, documented rule). One Codex login is larger than one Credential Manager entry holds (2,560 bytes), so a saved login would not fit; the copies are private files like the fallback, with no warning of their own. Codex itself keeps its live login in `auth.json` (§7.9).
 
-**Identity.** An account is identified by `accountUuid` + `organizationUuid`. The same person in two organizations counts as two accounts, which is exactly the two-licence case. An OpenAI or Ollama login is a **provider subscription** in `providerSubscriptions`: its account reference, label, abbreviation, colour, plan and monthly price with its `priceCurrency`, one per login, created when the provider's first reading arrives and edited like an account's (§7.9).
+**Identity.** An account is identified by `accountUuid` + `organizationUuid`. The same person in two organizations counts as two accounts, which is exactly the two-licence case. An OpenAI, Ollama or Google login is a **provider subscription** in `providerSubscriptions`: its account reference, label, abbreviation, colour, plan and monthly price with its `priceCurrency`, one per login, created when the provider's first reading arrives and edited like an account's (§7.9).
 
 **Usage cache.** `usage-cache.json` holds the last response per account and when it was fetched. The pop-up opens at once from the cache and refreshes in the background.
 
@@ -1029,7 +1029,7 @@ is asked there.
 - The account is named `ollama` under the organization `ollama`; the plan is empty.
 - Every successful `/api/usage?range=24h` answer's `buckets` also become the history's Ollama hours (§5); the Activity page names in one note how much they counted beyond the known sessions (§11.4).
 
-**Google.** Display only. Google's terms forbid third-party software that uses the Antigravity login,
+**Google.** Read only. Google's terms forbid third-party software that uses the Antigravity login,
 and its FAQ does not support automated account rotation on consumer plans. So seatswap asks Google
 nothing, reads no Google login, and neither saves nor switches one. The Antigravity CLI (`agy`) hands
 its own numbers to a status line command; that command is `seatswap statusline`, set in
@@ -1042,13 +1042,19 @@ this key. A `statusLine` that runs another command is never replaced: Connect is
 sentence `agy's status line already runs {command}; seatswap does not replace it. To connect, set it to
 "seatswap statusline" in {path}.`
 A payload whose `product` is `antigravity` is agy's: it touches neither the feed nor the recorded keys,
-and the line printed for `agy` is the plan and each limit, `Google Pro · 5h 60% · week 6%` (empty
-without an account). With an `email` and a non-empty `quota`, and while `googleCard` is on, the numbers
-go to `<data>/google.json` under the feed's write rule. The percent is `100 × (1 − remaining_fraction)`,
-the reset is `reset_time`. `gemini-5h` is the session and `gemini-weekly` the week; `3p-5h` and
-`3p-weekly` are `5h Claude/GPT` and `week Claude/GPT`; any other bucket keeps its id as its name. Of these
-only `gemini-weekly` is in Google's documentation; the other three come from another tool and were not
-checked against a real payload.
+and the line printed for `agy` is the plan as `agy` names it and each limit,
+`Google AI Pro · 5h 60% · week 6%` (`Google` without a plan, empty without an account). With an `email`
+and a non-empty `quota` the numbers go to `<data>/google.json` under the feed's write rule. The percent
+is `100 × (1 − remaining_fraction)`, the reset is `reset_time`. `gemini-5h` is the session and
+`gemini-weekly` the week; `3p-5h` and `3p-weekly` are `5h Claude/GPT` and `week Claude/GPT`; any other
+bucket keeps its id as its name. The four ids were seen in a real payload of agy 1.5.17.
+
+An open `agy` session keeps saying the numbers of its own last answer while another one works on, so a
+stored number is kept against an older one of the same email and plan: less use of the same window (the
+resets within the jitter), or a window that ends earlier with no more use or that had already ended.
+When Google takes use back inside a window, the card shows it once that window has ended. An unused
+limit's `reset_time` moves with the clock, so while nothing is used a different reset is no change of
+the file.
 
 **Before the first reading.** While `google.json` does not exist, the card follows `agy` itself, read
 at every round and when the pop-up opens: with no folder `~/.gemini/antigravity-cli` there is no card;
@@ -1066,8 +1072,15 @@ The card shows once that file exists: the email, the plan, the limits and the ag
 window whose reset has passed is no row but the note `{name} was reset since the last reading`; a bucket
 that cannot be read or is disabled is the note `{id} not read: {reason}`. The numbers move only while
 `agy` runs interactively (headless `agy -p` runs no status line), and the file holds one account, the
-last one signed in. A Google reading is not recorded in the history, is no subscription and counts in
-no statistics.
+last one signed in, so a week can read too low. `Show a Google card` only hides the card.
+
+A Google account is a provider subscription (`GO`, `#0d9488`), created at its first reading and edited
+like an account's; its plan comes from `agy`. One reading of the file is recorded once, at the time
+`agy` said it and as a status-line reading, so a drop in it is never an early reset: the session and the
+week as they were then, whatever has ended since. The Claude/GPT limits stay on the card. seatswap does
+not record the work `agy` does: what a Google week was worth is unknown with that reason, never 0, and a
+figure that sets recorded work against what was paid (the Subscriptions totals and total row, the
+This-week card's paid sum and its share) leaves Google out.
 
 **What the card shows.** One card per switched-on provider, Codex first. A Codex card has the
 account card's rings and bars, the plan and a row per limit with its reset and its own name; a
@@ -1302,7 +1315,7 @@ They give real click handling and exact placement on those desktops. They're not
 | `codexHome` | none | `null` or an absolute folder: where Codex's `auth.json` and `sessions/` are; `null` means `$CODEX_HOME`, else `~/.codex`. A relative folder is refused. Settings → Providers, "Codex folder" (§7.9) |
 | `ollamaCard` | off | `bool`; show a read-only Ollama card. While off, there is no card, but Ollama is still polled when the `ollama` program is found or this host stores an Ollama subscription (§7.9). Settings → Providers, "Show an Ollama card" |
 | `ollamaUrl` | `"http://127.0.0.1:11434"` | the Ollama server the card asks; must start with `http://` or `https://` and name a host: a DNS name, an IPv4 address or a bracketed IPv6 address. Refused: a whitespace or control character, user info (without quoting the URL), no such scheme, a host that is not one of those, a query string, a fragment, an empty path segment. A port, a path, an IPv6 host and one trailing `/` are accepted. Settings → Providers, "Ollama server" (§7.9) |
-| `googleCard` | on | `bool`; show a Google card while `agy` is installed: Connect until it hands `seatswap statusline` an account, then its numbers (§7.9). While off, nothing is written and no card shows. Settings → Providers, "Show a Google card" |
+| `googleCard` | on | `bool`; show a Google card while `agy` is installed: Connect until it hands `seatswap statusline` an account, then its numbers (§7.9). Off only hides the card; the numbers are still recorded. Settings → Providers, "Show a Google card" |
 
 Every setting above is edited in the large window's Settings area (§11.4); the last column names the
 group and the row. The pop-up has no settings view any more (§11.3). Settings → General's first line
@@ -1811,7 +1824,8 @@ stands below it instead of the rest of the page. The card has three totals over 
   paid sum is one week's price for each running Claude week, one week's price for each running
   OpenAI week, and `month price × 12 / 52` for an Ollama month (documented rule). A running window
   without a price adds nothing, the sum is drawn `≥` with the reason (R3), and the percent is `—`
-  while the used value or the paid sum is partial.
+  while the used value or the paid sum is partial. Google's running week is not
+  in the sum; the line then ends with `, without GO`.
 - **At API prices**: what the same work would cost without a subscription.
 
 Below them, one row per project the card counts, sorted by the known part of its subscription value,
@@ -1997,7 +2011,8 @@ belongs to that subscription and at least one record in it does belong to it; an
 likewise. A pair that no record of the subscription touches says nothing about its plan, and a
 record of another company never counts (documented rules).
 A Claude account's factors are the ones auto-burn uses. A subscription with no factor at all says
-`not measured yet: no pair with priced work in this range`; one whose factor leans on its prior still
+`not measured yet: no pair with priced work in this range`, a Google one
+`seatswap does not record the work agy does`; one whose factor leans on its prior still
 shows its hours, but its size against the reference says `not measured` and only the size by name is
 shown.
 
@@ -2463,6 +2478,7 @@ still read only the live account.
   `paid = 100 × percent_value(price)`, `offered = paid × the number of windows` and `expired` is the
   sum of every window's `lost` at `percent_value(price)`, while `used` is the windows' summed use at
   one week's price.
+- No record belongs to Google: seatswap has none of the work `agy` does (§7.9).
 - A provider subscription's value is the same share of its own window: OpenAI's `weekly_all` week
   and Ollama's `monthly_credits` month. The value is `its API USD / the window's API USD × the
   window's used money`. For OpenAI the used money is the week's use at one week's price

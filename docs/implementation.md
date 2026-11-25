@@ -337,7 +337,7 @@ pub struct AccountsFile { pub version: u32, pub accounts: Vec<Account>,
     #[serde(default)] pub secrets_backend: Option<SecretsBackend> }
 // version must be 1; anything else is UnsupportedVersion, never silently upgraded.
 
-/// An OpenAI or Ollama subscription (R4). `account` is the provider's `AccountRef`; its look and
+/// An OpenAI, Ollama or Google subscription (R4). `account` is the provider's `AccountRef`; its look and
 /// price are the account's own fields. Serde camelCase; company is derived, never stored.
 pub struct ProviderSubscription { pub account: AccountRef, pub label: String, pub abbr: String,
     pub color: String, #[serde(default)] pub plan: Option<String>,
@@ -838,7 +838,7 @@ pub trait Record: Serialize + DeserializeOwned { const KIND: Kind; fn at(&self) 
 
 pub struct AccountRef { pub acc: String, pub org: String }        // accountUuid and organizationUuid
 impl AccountRef { pub fn of(account: &Account) -> AccountRef;
-                  pub fn is_claude(&self) -> bool; }              // org is not "codex" or "ollama"
+                  pub fn is_claude(&self) -> bool; }              // its company is Anthropic
 pub enum Source { Poll, Statusline }
 pub struct LimitSample { pub k: LimitKind, pub m: Option<String>, pub p: f64, pub r: Option<DateTime<Utc>>, pub b: bool }
 pub struct Sample { pub t: DateTime<Utc>, #[serde(flatten)] pub account: AccountRef, pub src: Source, pub l: Vec<LimitSample> }
@@ -2604,16 +2604,19 @@ pub fn prices_from_models_dev(body: &serde_json::Value) -> Result<ModelsDevList,
 pub fn price_key(provider: &str, model_id: &str) -> String; // "<provider>/<model id>"
 
 /// The company a record's model or an account belongs to (serialised as its lowercase name:
-/// `anthropic`, `openai`, `ollama`). `of_model` is the
+/// `anthropic`, `openai`, `ollama`, `google`). `of_model` is the
 /// one rule: `claude-*` → Anthropic, `<name>:cloud` / `<name>:<tag>-cloud` (name and tag not
 /// empty) → Ollama, any other id → OpenAI; `of_account` maps org `codex` → OpenAI, `ollama` →
-/// Ollama, every other org (a Claude organization id) → Anthropic. `model_price_key` and
+/// Ollama, `google` → Google, every other org (a Claude organization id) → Anthropic. `model_price_key` and
 /// `is_plan_model` both follow it (one private decision, `priced_as`, gives the company and its id
-/// in the company's models.dev list). `name()` is "Anthropic", "OpenAI" or "Ollama"; `price_list()`
-/// is `anthropic`, `openai` or `ollama-cloud`.
+/// in the company's models.dev list). `name()` is "Anthropic", "OpenAI", "Ollama" or "Google"; `price_list()`
+/// is `anthropic`, `openai`, `ollama-cloud` or `google` (not read). `work_recorded()` is false for
+/// Google alone: no model id is Google's, its work's worth is `Missing::WorkNotRecorded`, and
+/// `UsageEntry::counted` and the This-week `paid` leave it out (`paid_without` names the rows).
 #[derive(Serialize)] #[serde(rename_all = "lowercase")]
-pub enum Company { Anthropic, OpenAI, Ollama }
-impl Company { pub fn of_model(model: &str) -> Company; pub fn of_account(account: &AccountRef) -> Company;
+pub enum Company { Anthropic, OpenAI, Ollama, Google }
+impl Company { pub const ALL: [Company; 4]; pub fn work_recorded(&self) -> bool;
+               pub fn of_model(model: &str) -> Company; pub fn of_account(account: &AccountRef) -> Company;
                pub fn name(&self) -> &'static str; pub fn price_list(&self) -> &'static str; }
 /// The one plan-model rule: `Company::of_model(model) == Company::Anthropic`. Only such a record
 /// enters a Claude account's week; any other model id (OpenAI's, Ollama's) gets its own
@@ -3608,6 +3611,8 @@ pub struct ThisWeekTotals {
     pub paid: Option<f64>,
     /// A listed running window has no price, so `paid` holds only the others' sum (R3).
     pub paid_partial: bool,
+    /// The rows with a running window that `paid` leaves out: their work is in no record.
+    pub paid_without: Vec<String>,
     /// `used.subscription / paid × 100`; `None` while either is unknown, `paid` is 0, or either
     /// is partial ([`full_half`], R3).
     pub used_of_paid: Option<f64> }
@@ -5024,7 +5029,7 @@ pub trait Record {
     fn is_claude(&self) -> bool { true }
 }
 impl AccountRef {
-    pub fn is_claude(&self) -> bool; // org != CODEX_ORG && org != OLLAMA_ORG
+    pub fn is_claude(&self) -> bool; // Company::of_account is Anthropic
 }
 impl Record for Event {
     fn is_claude(&self) -> bool;     // no account, or at least one Claude account
@@ -5283,10 +5288,12 @@ pub struct GoogleBucket { pub id: String, pub percent: Option<f64>,
     pub resets_at: Option<DateTime<Utc>>, pub problem: Option<String> }
 pub struct GoogleFeed { pub at: DateTime<Utc>, pub email: String, pub plan: Option<String>,
     pub buckets: Vec<GoogleBucket> }                       // <data>/google.json
-pub struct GoogleReading { pub reading: ProviderReading, pub at: DateTime<Utc>, pub notes: Vec<String> }
+pub struct GoogleReading { pub reading: ProviderReading,
+    pub recorded: ProviderReading,   // Session and WeeklyAll as they were at `at`; no usage without either
+    pub at: DateTime<Utc>, pub notes: Vec<String> }
 pub fn is_payload(raw: &Value) -> bool;
 pub fn feed_from_payload(raw: &Value, now: DateTime<Utc>) -> Option<GoogleFeed>;
-pub fn write_if_due(app: &AppPaths, feed: &GoogleFeed) -> io::Result<bool>;
+pub fn write_if_due(app: &AppPaths, feed: &GoogleFeed) -> io::Result<bool>; // never back to an older number
 pub fn read(app: &AppPaths, now: DateTime<Utc>) -> Result<Option<GoogleReading>, ProviderError>;
 pub fn reading(feed: GoogleFeed, now: DateTime<Utc>) -> GoogleReading;
 pub fn limit_name(kind: &LimitKind) -> &str;
@@ -5304,16 +5311,17 @@ pub fn status_line_in(path: &Path) -> Result<Option<Value>, ClaudeSettingsError>
 pub fn set_status_line_in(path: &Path, value: Option<&Value>) -> Result<Option<Value>, ClaudeSettingsError>;
 pub fn status_line_command(exe: &Path) -> Result<String, ClaudeSettingsError>;
 // core::feed: the one write and read rule of a status line's file
-pub(crate) fn write_file_if_due<T>(app, path, value: &T, at, stored_state) -> io::Result<bool>;
+pub(crate) fn write_file_if_due<T>(app, path, value: T, at, stored_state: FnOnce(&T, &mut T) -> (at, same)) -> io::Result<bool>;
 pub(crate) fn read_file<T>(path: &Path) -> io::Result<Option<T>>;
 // app::statusline: None when the payload is not agy's
-pub(crate) fn google_line(app, settings, payload, now) -> Result<Option<String>, String>;
+pub(crate) fn google_line(app, payload, now) -> Result<Option<String>, String>;
 ```
 
 `cli::statusline_line` asks `google_line` first. The provider thread's third provider reads the file at
 each round and when the pop-up opens; `ProviderView` carries `email` and `notes` for it, and `fetchedAt`
-is the time `agy` said the numbers. `found` is always false for it: nothing is recorded. Without the file
-it asks `agy_link` (the runtime holds `agy: Result<Agy, String>`, built once by
+is the time `agy` said the numbers. `found` is whether the file exists: the reading is recorded with the
+card off too, through `record(reading, at, src, on)` (`Source::Statusline`, at the feed's `at`) and
+`ensure_subscription`, once per `at` (`google_recorded`). Without the file it asks `agy_link` (the runtime holds `agy: Result<Agy, String>`, built once by
 `providers_rt::real_agy`; tests pass an `Agy` in their tempdir) and `ProviderView.can_connect` tells
 the pop-up to show **Connect agy**. The pop-up's `connect_agy` command goes through the action thread
 (`ActionCommand::ConnectAgy`), which calls `google::connect_agy` and then

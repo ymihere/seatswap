@@ -6,6 +6,25 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-11-25
+
+### Added
+
+- Google is a subscription like the others: the account the Antigravity CLI (`agy`) is signed in to has
+  a row in Settings → Accounts (short name, colour, price), its 5h and weekly use is recorded in the
+  history under its email, and the statistics show its plan, price, weekly use and unused money. What
+  `agy` works is not recorded, so its worth is unknown, and the totals that set work against price leave
+  Google out. No switching and no auto-burn; seatswap still asks Google nothing.
+
+### Changed
+
+- *Show a Google card* only hides the card, like the OpenAI and Ollama switches; the numbers are still
+  recorded.
+- Several open `agy` sessions: an older session's numbers no longer replace newer ones.
+- The line `agy` shows names the plan once (`Google AI Pro`, not `Google Google AI Pro`).
+- When the history is shared, update seatswap on every computer: an older version takes the Google
+  account for an unknown Claude account in its statistics.
+
 ## [1.5.5] - 2026-11-25
 
 ### Added
