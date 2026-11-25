@@ -269,6 +269,7 @@ function emptyCard() {
       used: emptyValues(),
       paid: null,
       paidPartial: false,
+      paidWithout: [],
       usedOfPaid: null,
     },
     projects: [],
@@ -372,6 +373,10 @@ export function thisWeek(query) {
       paid,
       // OL's running month has no price: the paid sum is a lower bound.
       paidPartial: chosenSubscriptions.some((subscription) => subscription.abbr === "OL"),
+      // Google's work is in no record, so its week is not in the paid sum.
+      paidWithout: chosenSubscriptions
+        .filter((subscription) => subscription.company === "google")
+        .map((subscription) => subscription.abbr),
       usedOfPaid: null,
     },
     projects,

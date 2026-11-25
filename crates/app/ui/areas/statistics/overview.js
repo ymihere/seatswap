@@ -137,6 +137,9 @@ function checkThisWeek(card) {
       `stats_this_week returned the used share ${JSON.stringify(totals.usedOfPaid)}`
     );
   }
+  if (!Array.isArray(totals.paidWithout)) {
+    throw new Error("stats_this_week did not say what the paid sum leaves out");
+  }
   if (totals.paid === null && (totals.paidPartial || totals.usedOfPaid !== null)) {
     throw new Error("stats_this_week has no paid sum but a partial sum or a share of it");
   }
@@ -177,7 +180,8 @@ function paidAmount(totals, currency) {
 
 // The Used total's sub-line: the share and the paid sum, or the paid sum alone
 // while the share is not known (R3: a partial used value or a partial paid sum
-// has no share), or the reason no window has a price.
+// has no share), or the reason no window has a price. A subscription whose work
+// is in no record is named: neither side of the share counts it.
 function usedSubline(totals, currency) {
   if (totals.paid === null) return "no price for this week's windows";
   const parts = [];
@@ -188,6 +192,14 @@ function usedSubline(totals, currency) {
   }
   parts.push(...paidAmount(totals, currency));
   parts.push(" paid for this week");
+  if (totals.paidWithout.length > 0) {
+    parts.push(
+      h("span", {
+        text: `, without ${totals.paidWithout.join(", ")}`,
+        title: "its work is not recorded, so it counts neither as used nor as paid here",
+      })
+    );
+  }
   return parts;
 }
 

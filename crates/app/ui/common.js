@@ -1036,10 +1036,11 @@ const COMPANY_NAMES = {
   anthropic: "Anthropic",
   openai: "OpenAI",
   ollama: "Ollama",
+  google: "Google",
 };
 
 // The one company tag of the window: a provider other than Claude (OpenAI,
-// Ollama) by its name, in the account tag's shape but neutral, since its work
+// Ollama, Google) by its name, in the account tag's shape but neutral, since its work
 // uses no Claude account. `company` is the JSON company key; `title` says what
 // the tag stands for where it is.
 function providerName(company, title) {
@@ -1048,7 +1049,7 @@ function providerName(company, title) {
   }
   const name = COMPANY_NAMES[company];
   if (typeof name !== "string") {
-    throw new Error(`unknown company ${JSON.stringify(company)}: use anthropic, openai or ollama`);
+    throw new Error(`unknown company ${JSON.stringify(company)}: use anthropic, openai, ollama or google`);
   }
   return h("span", { class: "stats-acc stats-provider", text: name, title });
 }

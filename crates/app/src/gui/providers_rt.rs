@@ -445,6 +445,9 @@ pub(crate) struct ProvidersRuntime {
     codex_tried: Option<DateTime<Utc>>,
     ollama_tried: Option<DateTime<Utc>>,
     google_tried: Option<DateTime<Utc>>,
+    /// The time of the Google reading this run recorded last: a file is read
+    /// many times and recorded once.
+    google_recorded: Option<DateTime<Utc>>,
     /// Whether the last Ollama poll of this run was `NotRunning`: the change
     /// from running to not running is reported once (R6).
     ollama_not_running: bool,
@@ -579,6 +582,7 @@ impl ProvidersRuntime {
             codex_tried: None,
             ollama_tried: None,
             google_tried: None,
+            google_recorded: None,
             ollama_not_running: false,
             live_seen: false,
             last_live: None,
@@ -755,30 +759,44 @@ impl ProvidersRuntime {
             match provider {
                 Provider::Codex => self.poll_codex(settings, now),
                 Provider::Ollama => self.poll_ollama(settings, now),
-                Provider::Google => self.poll_google(now),
+                Provider::Google => self.poll_google(settings, now),
             }
         }
     }
 
     /// One Google round: the file `seatswap statusline` left (spec §7.9). Nothing
-    /// is asked, so nothing can change meanwhile; no file is no account and no
-    /// card. The reading is only shown, never recorded.
-    fn poll_google(&mut self, now: DateTime<Utc>) {
+    /// is asked, so nothing can change meanwhile; no file is no account. A
+    /// reading is recorded once, at the time `agy` said it.
+    fn poll_google(&mut self, settings: &Settings, now: DateTime<Utc>) {
         self.google_tried = Some(now);
+        let on = settings.google_card;
         self.google = match providers::google::read(&self.app, now) {
             Ok(Some(found)) => {
-                let email = found.reading.account.acc.clone();
-                let mut view = success(Provider::Google, found.reading, found.at);
-                view.email = Some(email);
-                view.notes = found.notes;
-                Some(view)
+                let recorded = &found.recorded;
+                if self.google_recorded != Some(found.at) {
+                    self.google_recorded = Some(found.at);
+                    self.record(recorded, found.at, Source::Statusline, on);
+                    let plan = recorded.plan.as_deref();
+                    self.ensure_subscription(&recorded.account, plan, found.at, on);
+                }
+                on.then(|| {
+                    let email = found.reading.account.acc.clone();
+                    let mut view = success(Provider::Google, found.reading, found.at);
+                    view.email = Some(email);
+                    view.notes = found.notes;
+                    view
+                })
             }
-            Ok(None) => self.agy_view(),
-            Err(error) => Some(failure(
-                Provider::Google,
-                self.google.as_ref(),
-                error.to_string(),
-            )),
+            Ok(None) => self.agy_view().filter(|_| on),
+            Err(error) => {
+                let text = error.to_string();
+                if on {
+                    Some(failure(Provider::Google, self.google.as_ref(), text))
+                } else {
+                    self.report_provider_error(false, &text);
+                    None
+                }
+            }
         };
     }
 
@@ -850,7 +868,7 @@ impl ProvidersRuntime {
         let view = match result {
             Ok(reading) => {
                 self.ollama_not_running = false;
-                self.record(&reading, now, on);
+                self.record(&reading, now, Source::Poll, on);
                 self.ensure_subscription(&reading.account, reading.plan.as_deref(), now, on);
                 on.then(|| success(Provider::Ollama, reading, now))
             }
@@ -939,7 +957,7 @@ impl ProvidersRuntime {
                     copy: None,
                     live: true,
                 });
-                self.record(&reading, now, on);
+                self.record(&reading, now, Source::Poll, on);
                 self.ensure_subscription(&reading.account, reading.plan.as_deref(), now, on);
                 on.then(|| success(Provider::Codex, reading, now))
             }
@@ -979,7 +997,7 @@ impl ProvidersRuntime {
         }
         for answer in &answers {
             if let Some(reading) = &answer.reading {
-                self.record(reading, now, on);
+                self.record(reading, now, Source::Poll, on);
                 self.ensure_subscription(&reading.account, reading.plan.as_deref(), now, on);
             }
         }
@@ -1245,9 +1263,7 @@ impl ProvidersRuntime {
                     .is_some_and(|path_var| paths::program_on_path("ollama", path_var).is_some());
                 in_path || !self.subscriptions(provider).is_empty()
             }
-            // Being found means a reading is recorded with the card off; a
-            // Google reading is only shown.
-            Provider::Google => false,
+            Provider::Google => self.app.google_file().is_file(),
         }
     }
 
@@ -1366,17 +1382,17 @@ impl ProvidersRuntime {
     /// only the card's spend error, as before O-1. A history that could not be
     /// opened at start is already in the snapshot's error and was notified there,
     /// so this thread records nothing and reports nothing for it.
-    fn record(&mut self, reading: &ProviderReading, now: DateTime<Utc>, on: bool) {
+    ///
+    /// `at` is when the numbers were read. `src` is the status line for Google,
+    /// whose numbers `agy` hands over: the recorder takes no reset from a drop
+    /// in them.
+    fn record(&mut self, reading: &ProviderReading, at: DateTime<Utc>, src: Source, on: bool) {
         let mut failures = Vec::new();
         if let Some(usage) = &reading.usage {
             if let Ok(recorder) = &mut self.recorder {
-                if let Err(error) = recorder.reading(
-                    &reading.account,
-                    reading.plan.as_deref(),
-                    usage,
-                    now,
-                    Source::Poll,
-                ) {
+                if let Err(error) =
+                    recorder.reading(&reading.account, reading.plan.as_deref(), usage, at, src)
+                {
                     failures.push(ops::history_unwritable(&error));
                 }
             }
@@ -1518,6 +1534,7 @@ mod tests {
 
     use tempfile::tempdir;
 
+    use seatswap_core::api::LimitKind;
     use seatswap_core::history::{
         AccountRef, By, Event, EventKind, Hosts, OllamaHourRecord, Range, Sample,
     };
@@ -1584,7 +1601,56 @@ mod tests {
         }
     }
 
-    /// A Google file appears and goes with its card; the history never hears of it.
+    /// What `agy` said at `at`: the week's and the 5h window's use and resets.
+    fn google_says(
+        app: &AppPaths,
+        at: &str,
+        (email, plan): (&str, &str),
+        week: (f64, &str),
+        session: (f64, &str),
+    ) {
+        let raw = serde_json::json!({
+            "product": "antigravity", "email": email, "plan_tier": plan,
+            "quota": {"gemini-weekly": {"remaining_fraction": week.0, "reset_time": week.1},
+                      "gemini-5h": {"remaining_fraction": session.0, "reset_time": session.1},
+                      "3p-weekly": {"remaining_fraction": 0.9, "reset_time": week.1},
+                      "3p-5h": {"remaining_fraction": 1.0, "reset_time": session.1}}
+        });
+        let feed = providers::google::feed_from_payload(&raw, utc(at)).expect("a feed");
+        providers::google::write_if_due(app, &feed).expect("the Google file");
+    }
+
+    const SAM: (&str, &str) = ("sam@mail.example", "Google AI Pro");
+
+    fn google_samples(dir: &Path) -> Vec<Sample> {
+        history(dir)
+            .read::<Sample>(&Range::ALL, &Hosts::All)
+            .expect("the samples")
+            .records
+            .into_iter()
+            .map(|hosted| hosted.record)
+            .collect()
+    }
+
+    fn google_events(dir: &Path) -> Vec<Event> {
+        history(dir)
+            .read::<Event>(&Range::ALL, &Hosts::All)
+            .expect("the events")
+            .records
+            .into_iter()
+            .map(|hosted| hosted.record)
+            .collect()
+    }
+
+    fn google_subscriptions(app: &AppPaths) -> Vec<store::ProviderSubscription> {
+        store::load_accounts(app)
+            .expect("accounts.json")
+            .provider_subscriptions
+    }
+
+    /// A Google file appears and goes with its card, and its account is a
+    /// subscription whose Gemini limits are recorded at the time `agy` said them,
+    /// once, whatever the tray's own time is.
     #[test]
     fn the_google_card_shows_once_an_account_is_found() {
         let dir = tempdir().expect("tempdir");
@@ -1592,26 +1658,58 @@ mod tests {
         let now = utc("2026-11-25T12:00:00Z");
         let mut runtime = test_runtime(dir.path(), Api::default(), &dir.path().join("codex"));
         assert!(runtime.poll_round(&settings(), now).is_empty());
+        assert!(!dir.path().join("history").exists());
 
-        let raw = serde_json::json!({
-            "product": "antigravity", "email": "sam@mail.example", "plan_tier": "Pro",
-            "quota": {"gemini-weekly": {"remaining_fraction": 0.75,
-                                        "reset_time": "2026-11-30T07:50:32Z"},
-                      "gemini-5h": {"remaining_fraction": 0.5,
-                                    "reset_time": "2026-11-25T11:00:00Z"}}
-        });
         let read_at = utc("2026-11-25T10:00:00Z");
-        let feed = providers::google::feed_from_payload(&raw, read_at).expect("a feed");
-        providers::google::write_if_due(&app, &feed).expect("the Google file");
+        google_says(
+            &app,
+            "2026-11-25T10:00:00Z",
+            SAM,
+            (0.75, "2026-11-30T07:50:00Z"),
+            (0.5, "2026-11-25T11:00:00Z"),
+        );
 
         let view = only_view(runtime.poll_round(&settings(), now));
         assert_eq!(view.provider, "google");
-        assert_eq!(view.plan.as_deref(), Some("Pro"));
+        assert_eq!(view.plan.as_deref(), Some("Google AI Pro"));
         assert_eq!(view.email.as_deref(), Some("sam@mail.example"));
         assert_eq!(view.fetched_at, Some(read_at));
-        assert_eq!(view.notes, vec!["5h was reset since the last reading"]);
-        assert_eq!(view.usage.expect("usage").limits.len(), 1);
-        assert!(!dir.path().join("history").exists());
+        assert_eq!(
+            view.notes,
+            vec![
+                "5h Claude/GPT was reset since the last reading",
+                "5h was reset since the last reading"
+            ]
+        );
+        assert_eq!(view.usage.expect("usage").limits.len(), 2);
+
+        // A second round, and the next start, read the same file again.
+        runtime.poll_round(&settings(), utc("2026-11-25T12:05:00Z"));
+        let mut again = test_runtime(dir.path(), Api::default(), &dir.path().join("codex"));
+        again.poll_round(&settings(), utc("2026-11-25T14:00:00Z"));
+        let samples = google_samples(dir.path());
+        assert_eq!(samples.len(), 1, "{samples:?}");
+        assert_eq!(samples[0].t, read_at);
+        assert_eq!(samples[0].src, Source::Statusline);
+        assert_eq!(samples[0].account.acc, "sam@mail.example");
+        assert_eq!(samples[0].account.org, GOOGLE_ORG);
+        let limits: Vec<(LimitKind, f64)> = samples[0]
+            .l
+            .iter()
+            .map(|limit| (limit.k.clone(), limit.p))
+            .collect();
+        assert_eq!(
+            limits,
+            vec![(LimitKind::Session, 50.0), (LimitKind::WeeklyAll, 25.0)]
+        );
+        let added = |event: &Event| matches!(&event.kind, EventKind::AccountAdded { .. });
+        let events = google_events(dir.path());
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert!(added(&events[0]) && events[0].t == read_at, "{events:?}");
+        let subscriptions = google_subscriptions(&app);
+        assert_eq!(subscriptions.len(), 1);
+        assert_eq!(subscriptions[0].abbr, "GO");
+        assert_eq!(subscriptions[0].plan.as_deref(), Some("Google AI Pro"));
 
         let off = Settings {
             google_card: false,
@@ -1624,6 +1722,88 @@ mod tests {
         let view = only_view(runtime.poll_round(&settings(), now));
         assert!(view.error.expect("an error").contains("google.json"));
         assert_eq!(view.fetched_at, Some(read_at));
+        assert!(runtime.poll_round(&off, now).is_empty());
+    }
+
+    /// With its card off a Google account is still recorded, as Codex's is; the
+    /// plan `agy` names is kept current, and a second email is a second
+    /// subscription that leaves the first one's price alone.
+    #[test]
+    fn google_is_recorded_while_its_card_is_off() {
+        let dir = tempdir().expect("tempdir");
+        let app = test_app(dir.path());
+        let off = Settings {
+            google_card: false,
+            ..settings()
+        };
+        let mut runtime = test_runtime(dir.path(), Api::default(), &dir.path().join("codex"));
+        let week = (0.75, "2026-11-30T07:50:00Z");
+        let session = (0.5, "2026-11-25T14:00:00Z");
+
+        google_says(&app, "2026-11-25T10:00:00Z", SAM, week, session);
+        assert!(runtime
+            .poll_round(&off, utc("2026-11-25T10:01:00Z"))
+            .is_empty());
+        assert_eq!(google_samples(dir.path()).len(), 1);
+
+        let ultra = ("sam@mail.example", "Google AI Ultra");
+        google_says(&app, "2026-11-25T10:10:00Z", ultra, week, session);
+        runtime.poll_round(&off, utc("2026-11-25T10:11:00Z"));
+        let changed = google_events(dir.path())
+            .into_iter()
+            .filter(|event| matches!(&event.kind, EventKind::PlanChanged { .. }))
+            .count();
+        assert_eq!(changed, 1);
+        assert_eq!(
+            google_subscriptions(&app)[0].plan.as_deref(),
+            Some("Google AI Ultra")
+        );
+
+        let mut file = store::load_accounts(&app).expect("accounts.json");
+        file.settings.currency = Some("EUR".to_string());
+        file.provider_subscriptions[0].price = Some(22.0);
+        file.provider_subscriptions[0].price_currency = Some("EUR".to_string());
+        test_store(dir.path()).save(&file).expect("the price");
+        let kim = ("kim@mail.example", "Google AI Pro");
+        google_says(&app, "2026-11-25T10:20:00Z", kim, week, session);
+        runtime.poll_round(&off, utc("2026-11-25T10:21:00Z"));
+        let subscriptions = google_subscriptions(&app);
+        let rows: Vec<(&str, &str, Option<f64>)> = subscriptions
+            .iter()
+            .map(|one| (one.account.acc.as_str(), one.abbr.as_str(), one.price))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                ("sam@mail.example", "GO", Some(22.0)),
+                ("kim@mail.example", "G2", None)
+            ]
+        );
+    }
+
+    /// An unused limit's reset moves with the clock: no window ends by it.
+    #[test]
+    fn an_unused_google_limit_ends_no_window() {
+        let dir = tempdir().expect("tempdir");
+        let app = test_app(dir.path());
+        let mut runtime = test_runtime(dir.path(), Api::default(), &dir.path().join("codex"));
+        for step in 0..12 {
+            let at = utc("2026-11-25T10:00:00Z") + chrono::Duration::minutes(5 * step);
+            let text = |time: DateTime<Utc>| time.to_rfc3339();
+            google_says(
+                &app,
+                &text(at),
+                SAM,
+                (1.0, &text(at + chrono::Duration::days(7))),
+                (1.0, &text(at + chrono::Duration::hours(5))),
+            );
+            runtime.poll_round(&settings(), at);
+        }
+        let windows = history(dir.path())
+            .finished_windows(&Range::ALL, &Hosts::All)
+            .expect("the windows");
+        assert!(windows.records.is_empty(), "{:?}", windows.records);
+        assert!(!google_samples(dir.path()).is_empty());
     }
 
     /// Before its first reading the Google card follows `agy`: none while it is

@@ -1535,7 +1535,9 @@ function accountsCard() {
       h("b", { text: "OpenAI" }),
       " subscriptions are the Codex logins seatswap has seen; ",
       h("b", { text: "Ollama" }),
-      " has one. Their plan, when the provider names one, is read-only.",
+      " has one; ",
+      h("b", { text: "Google" }),
+      " is the account agy is signed in to, and its numbers move only while agy runs, so its week can read too low. Their plan, when the provider names one, is read-only.",
     ])
   );
   return card;
@@ -1713,8 +1715,8 @@ function subscriptionPlan(subscription) {
 
 // One provider subscription under the Claude accounts: the same table, the same
 // abbreviation/colour editor and price cell, but no auto-burn, organization or
-// login of its own. OpenAI's plan comes from the provider (read-only); Ollama's
-// is typed here.
+// login of its own. OpenAI's and Google's plan comes from the provider
+// (read-only); Ollama's is typed here.
 function subscriptionRow(subscription) {
   const field = `subscription:${subscription.account.org}:${subscription.account.acc}`;
   let accent = isColor(subscription.color) ? subscription.color.toLowerCase() : "#555b66";
@@ -1844,7 +1846,7 @@ function subscriptionRow(subscription) {
   } else {
     planControl = h("span", {
       class: "acc-text",
-      title: "the plan comes from the provider",
+      title: `${subscriptionPlan(subscription)} | the plan comes from the provider`,
       text: subscriptionPlan(subscription),
     });
   }
@@ -3560,7 +3562,7 @@ function providersCard() {
       setting(
         "Show a Google card",
         toggle("googleCard", "Show a Google card"),
-        "shown when agy is installed; it offers Connect until agy hands over its usage",
+        "shown when agy is installed; it offers Connect until agy hands over its usage. Off only hides the card: the usage is still recorded",
         "googleCard"
       ),
       note(

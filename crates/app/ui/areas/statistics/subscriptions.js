@@ -35,6 +35,11 @@ const LIMITS = {
 // priced work of the company's models (the Rust page's worked hour).
 const NO_WORKED_HOUR = "no hour with priced work of this company in the last 4 weeks";
 
+// Which subscriptions the totals line and the total row count (the Rust page's
+// `UsageEntry::counted`).
+const TOTALS_COUNT =
+  "the totals count the subscriptions with a finished week in this range whose work seatswap records; Google's work is not recorded";
+
 function requireObject(value, what) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`${what} must be an object, not ${JSON.stringify(value)}`);
@@ -249,7 +254,7 @@ function totalsCard(totals, currency, env) {
       h("span", {
         class: "mf",
         text: "No subscription has a finished week in this range yet.",
-        title: "the totals count only subscriptions with a finished week in this range",
+        title: TOTALS_COUNT,
       })
     );
     return card;
@@ -258,6 +263,7 @@ function totalsCard(totals, currency, env) {
     h("span", {
       class: "x13 stats-sub-totals-title",
       text: `All ${count} subscription${count === 1 ? "" : "s"}, a month`,
+      title: TOTALS_COUNT,
     })
   );
   card.appendChild(
@@ -653,7 +659,7 @@ function usageTotalNode(row, count, currency, env) {
   }
   const line = h("div", { class: "lr stats-sub-usage-row stats-sub-usage-total" });
   line.appendChild(
-    h("span", { class: "stats-sub-total-label", text: `All ${count}` })
+    h("span", { class: "stats-sub-total-label", text: `All ${count}`, title: TOTALS_COUNT })
   );
   for (const cell of usageCells(row, currency, env)) line.appendChild(cell);
   return line;

@@ -94,6 +94,9 @@ pub struct ThisWeekTotals {
     /// sum and is a lower bound (R3). `false` when every listed window has a
     /// price and also when none has one (`paid` is `None` then).
     pub paid_partial: bool,
+    /// The rows with a running window that `paid` leaves out because their work
+    /// is in no record, by their name on the card.
+    pub paid_without: Vec<String>,
     /// `used.subscription / paid × 100`; `None` while either is unknown,
     /// `paid` is 0, or `used.subscription` is partial or `paid` is partial: a
     /// share is computed only from halves that are not partial ([`full_half`],
@@ -792,6 +795,11 @@ pub fn this_week_card<Tz: TimeZone + Copy>(
     }
     providers.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
     let providers: Vec<ThisWeekProvider> = providers.into_iter().map(|(_, _, row)| row).collect();
+    let paid_without = providers
+        .iter()
+        .filter(|row| !row.company.work_recorded() && row.resets_at.is_some())
+        .map(|row| row.name.clone())
+        .collect();
 
     let used = total.unwrap_or_else(|| Values::sum(&[]));
     let mut projects: Vec<ThisWeekProject> = by_project
@@ -847,6 +855,7 @@ pub fn this_week_card<Tz: TimeZone + Copy>(
             used,
             paid,
             paid_partial,
+            paid_without,
             used_of_paid,
         },
         projects,
@@ -3287,6 +3296,8 @@ mod tests {
             assert_eq!(card.totals.paid, before.totals.paid);
             assert_eq!(card.totals.paid_partial, before.totals.paid_partial);
             assert_eq!(card.totals.used_of_paid, before.totals.used_of_paid);
+            let without: &[&str] = if found.is_some() { &["GO"] } else { &[] };
+            assert_eq!(card.totals.paid_without, without);
         }
     }
 

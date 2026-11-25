@@ -134,7 +134,8 @@ const EMPTY_WEEKS = [...yearValues(() => null), ...Array(12).fill(null)];
 // The provider subscriptions the built-in snapshot stores: OA's weekly window
 // and OL's monthly one are the page's made-up rows (OA one finished week and a
 // running window; O2, the second Codex login of the pop-up's fixture, only a
-// running window and no price; OL has no weekly window, only its monthly credits).
+// running window and no price; OL has no weekly window, only its monthly credits;
+// GO one finished week and a running window, whose work is not recorded).
 export const SUBSCRIPTIONS = [
   {
     id: null,
@@ -177,6 +178,20 @@ export const SUBSCRIPTIONS = [
     resetDay: null,
     resetHour: null,
     monthEnd: "2026-12-03T00:00:00.000Z",
+  },
+  {
+    id: null,
+    abbr: "GO",
+    label: "Google",
+    plan: "Google AI Pro",
+    color: "#0d9488",
+    price: 21.99,
+    company: "google",
+    used: [...EMPTY_WEEKS.slice(0, -1), 40],
+    now: 25,
+    resetDay: 1,
+    resetHour: 8,
+    monthEnd: null,
   },
 ];
 

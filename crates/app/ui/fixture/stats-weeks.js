@@ -111,11 +111,11 @@ function weekRow(account, indexes) {
   };
 }
 
-// A provider subscription's weekly windows: OpenAI's `weekly_all` week. Ollama
-// counts per month, so it has no week row of this grid.
+// A provider subscription's weekly windows: OpenAI's and Google's `weekly_all`
+// week. Ollama counts per month, so it has no week row of this grid.
 function providerWeekRows(chosenSubscriptions, indexes) {
   return chosenSubscriptions
-    .filter((subscription) => subscription.company === "openai")
+    .filter((subscription) => subscription.company !== "ollama")
     .map((subscription) => weekRow(subscription, indexes));
 }
 
@@ -125,7 +125,7 @@ export function weeks(query) {
   rows.push(...providerWeekRows(chosenSubscriptions, indexes));
   const recent = chosen.map((account) => ({ id: account.id, points: recentCurve(account) }));
   for (const subscription of chosenSubscriptions) {
-    if (subscription.company !== "openai") continue;
+    if (subscription.company === "ollama") continue;
     recent.push({ id: subscription.id, points: recentCurve(subscription) });
   }
   return {

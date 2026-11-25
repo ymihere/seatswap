@@ -484,7 +484,8 @@ function makeFixture() {
       },
     ],
     // The provider subscriptions under the Claude accounts (spec R4): OpenAI
-    // with the provider's plan and a monthly price, Ollama without either.
+    // and Google with the provider's plan and a monthly price, Ollama without
+    // either.
     providerSubscriptions: [
       {
         account: { acc: codexAccountId, org: "codex" },
@@ -515,6 +516,16 @@ function makeFixture() {
         plan: null,
         price: null,
         priceCurrency: null,
+      },
+      {
+        account: { acc: "sam@mail.example", org: "google" },
+        company: "google",
+        label: "Google",
+        abbr: "GO",
+        color: "#0d9488",
+        plan: "Google AI Pro",
+        price: 21.99,
+        priceCurrency: "EUR",
       },
     ],
     activeId: acmeId,
@@ -720,7 +731,7 @@ function makeFixture() {
       {
         provider: "google",
         title: "Google (Antigravity)",
-        plan: "Pro",
+        plan: "Google AI Pro",
         email: "sam@mail.example",
         usage: {
           limits: [

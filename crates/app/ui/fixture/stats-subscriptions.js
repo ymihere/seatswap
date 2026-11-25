@@ -33,6 +33,13 @@ const NOT_MEASURED = "not measured yet: no pair with priced work in this range";
 // for Ollama, monthly) window.
 const NO_FINISHED = "no finished week yet in this range";
 
+// `money.rs`'s reason for Google's worth, which no token record tells.
+const WORK_NOT_RECORDED = "seatswap does not record the work agy does";
+
+function isCounted(row) {
+  return row.weeks > 0 && row.company !== "google";
+}
+
 // The mock-up's tokens per hour actually worked with each company's models,
 // all its models mixed (the Rust page's worked hour).
 const TOKENS_PER_WORKED_HOUR = {
@@ -120,6 +127,22 @@ const ROWS = [
     since: null,
     entered: null,
     api: 33,
+  },
+  // Google's work is in no record: its price and use are known, its worth is
+  // not, and the totals leave it out (`plans.rs`'s `UsageEntry::counted`).
+  {
+    abbr: "GO",
+    company: "google",
+    plan: "Google AI Pro",
+    price: 21.99,
+    used: [...Array(11).fill(null), 40],
+    workHours: null,
+    perPercent: {},
+    mIx: null,
+    since: null,
+    entered: null,
+    api: null,
+    missing: WORK_NOT_RECORDED,
   },
 ];
 
@@ -214,7 +237,7 @@ function planRows() {
     trendMissing: row.abbr === "PR" ? "too few weeks to tell a change: 7 of the 10 it needs" : null,
     basisHours: row.workHours,
     thin: row.workHours !== null && row.workHours < 40,
-    missing: row.abbr === "O2" ? NOT_MEASURED : null,
+    missing: row.abbr === "O2" ? NOT_MEASURED : row.company === "google" ? WORK_NOT_RECORDED : null,
   }));
 }
 
@@ -347,7 +370,7 @@ function usageRow(row) {
 }
 
 function usageGroupsWith(makeRow) {
-  return ["anthropic", "openai", "ollama"].map((company) => {
+  return ["anthropic", "openai", "ollama", "google"].map((company) => {
     const rows = ROWS.filter((row) => row.company === company);
     // `plans.rs`'s group row (≈1327) sums every row of the company, also one
     // with no price: a missing part makes the group's price unknown.
@@ -368,7 +391,7 @@ function usageGroups() {
 function usageTotal() {
   // The row counts the subscriptions with a finished week of the range, as
   // `plans.rs`'s `usage_groups` (≈1336) and `totals_of` (≈1463) do.
-  const counted = ROWS.filter((row) => row.weeks > 0);
+  const counted = ROWS.filter(isCounted);
   const priceMonth = sumOpt(counted.map((row) => row.price));
   const expired = sumOpt(
     counted.map((row) => (row.weekPrice === null ? null : row.expiredMoney))
@@ -585,6 +608,11 @@ function tokensWeek() {
       cells: models.map(() => missing(NOT_MEASURED)),
       missing: NOT_MEASURED,
     },
+    {
+      id: subscriptionId("GO"),
+      cells: models.map(() => missing(WORK_NOT_RECORDED)),
+      missing: WORK_NOT_RECORDED,
+    },
   ];
   return { models, rows };
 }
@@ -592,7 +620,7 @@ function tokensWeek() {
 function totals() {
   // `plans.rs`'s `totals_of` (≈1463): the rows with a finished week of the
   // range, and a sum with one missing part is unknown.
-  const counted = ROWS.filter((row) => row.weeks > 0);
+  const counted = ROWS.filter(isCounted);
   const priceMonth = sumOpt(counted.map((row) => row.price));
   const apiMonth =
     sum(counted.map((row) => row.api / row.weeks)) * (52 / 12);
