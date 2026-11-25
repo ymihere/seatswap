@@ -60,9 +60,10 @@ impl GoogleBucket {
     }
 
     /// Whether `said`, read at `at`, is an older number of the limit than this
-    /// stored one: less use of the same window, or a window that ends earlier
-    /// with no more use or that had already ended. An open `agy` session keeps
-    /// saying the numbers of its own last answer while another one works on.
+    /// stored one: less use of the same window, no use while a used window
+    /// still runs, or a window that ends earlier with no more use or that had
+    /// already ended. An open `agy` session keeps saying the numbers of its own
+    /// last answer while another one works on.
     fn outdates(&self, said: &GoogleBucket, at: DateTime<Utc>) -> bool {
         let (Some(used), Some(said_used)) = (self.percent, said.percent) else {
             return false;
@@ -72,6 +73,9 @@ impl GoogleBucket {
         };
         if same_reset(reset, said_reset) {
             return said_used < used;
+        }
+        if said_used == 0.0 && used > 0.0 && reset > at {
+            return true;
         }
         said_reset < reset && (said_used <= used || said_reset <= at)
     }
@@ -115,7 +119,8 @@ impl GoogleFeed {
 pub struct GoogleReading {
     pub reading: ProviderReading,
     /// What the history records: the account's Gemini session and week as they
-    /// were at `at`, whatever has ended since. No usage without either.
+    /// were at `at`, whatever has ended since. A limit nobody has used has no
+    /// window that could end, so it has no reset here. No usage without either.
     pub recorded: ProviderReading,
     pub at: DateTime<Utc>,
     pub notes: Vec<String>,
@@ -246,6 +251,9 @@ pub fn reading(feed: GoogleFeed, now: DateTime<Utc>) -> GoogleReading {
     let (limits, notes) = limits_at(&feed.buckets, now);
     let (mut recorded, _) = limits_at(&feed.buckets, feed.at);
     recorded.retain(|limit| matches!(limit.kind, LimitKind::Session | LimitKind::WeeklyAll));
+    for limit in recorded.iter_mut().filter(|limit| limit.percent == 0.0) {
+        limit.resets_at = None;
+    }
     let recorded = (!recorded.is_empty()).then(|| usage_of(recorded));
     let of = |usage: Option<Usage>| ProviderReading {
         account: AccountRef {
@@ -667,6 +675,9 @@ mod tests {
             // The one before it, and an unused one from before its start.
             (80, 31.0, "2026-11-25T12:01:10Z", 2.0),
             (100, 0.0, "2026-12-02T12:00:00Z", 2.0),
+            // An unused limit's reset moves with the clock, so it can lie after
+            // the used window's while that window runs.
+            (110, 0.0, "2026-12-08T12:00:00Z", 2.0),
             // More use before an earlier reset is news, not an old number.
             (120, 5.0, "2026-12-03T12:00:00Z", 5.0),
         ] {
@@ -686,6 +697,34 @@ mod tests {
         other.email = "lab@mail.example".to_string();
         write_if_due(&app, &other).unwrap();
         assert_eq!(stored_percent(&app), Some(0.5));
+    }
+
+    #[test]
+    fn an_unused_number_is_news_once_the_used_window_has_ended() {
+        let dir = tempdir().unwrap();
+        let app = AppPaths::at(&dir.path().join("data"));
+        let reset = "2026-11-25T14:10:00Z";
+        for (seconds, percent, reset, stored) in [
+            (0, 5.0, reset, 5.0),
+            (1_200, 0.0, "2026-11-25T17:20:00Z", 5.0),
+            (7_800, 0.0, "2026-11-25T19:10:00Z", 0.0),
+        ] {
+            write_if_due(&app, &one_bucket(seconds, "gemini-5h", percent, reset)).unwrap();
+            assert_eq!(stored_percent(&app), Some(stored), "at {seconds} s");
+        }
+    }
+
+    #[test]
+    fn an_unused_limit_is_recorded_without_a_window() {
+        let feed = one_bucket(0, "gemini-weekly", 0.0, "2026-12-02T12:00:00Z");
+        let found = reading(feed, now());
+        let limits = |reading: &ProviderReading| {
+            let usage = reading.usage.as_ref().expect("usage");
+            (usage.limits[0].percent, usage.limits[0].resets_at)
+        };
+        assert_eq!(limits(&found.recorded), (0.0, None));
+        let card = limits(&found.reading);
+        assert_eq!(card, (0.0, Some("2026-12-02T12:00:00Z".parse().unwrap())));
     }
 
     #[test]

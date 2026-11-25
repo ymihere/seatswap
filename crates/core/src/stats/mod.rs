@@ -1221,7 +1221,8 @@ pub struct Empty {
 /// host (the `providerSwitch` rule of decision P-2 2); Ollama has one
 /// subscription, so its `monthly_credits` block always counts, and Google's
 /// readings are of the account agy was signed in to, so its `session` and
-/// `weekly_all` blocks count too. No sum across companies.
+/// `weekly_all` blocks count too; no caller asks for Google's yet, because a
+/// company without recorded work has no blocked hours. No sum across companies.
 pub fn blocked_spans<Tz: TimeZone + Copy>(
     ctx: &Ctx<Tz>,
     range: &Range,

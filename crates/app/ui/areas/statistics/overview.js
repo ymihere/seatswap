@@ -183,15 +183,18 @@ function paidAmount(totals, currency) {
 // has no share), or the reason no window has a price. A subscription whose work
 // is in no record is named: neither side of the share counts it.
 function usedSubline(totals, currency) {
-  if (totals.paid === null) return "no price for this week's windows";
   const parts = [];
-  if (typeof totals.usedOfPaid === "number") {
-    parts.push(`${percentText(totals.usedOfPaid)} of `);
+  if (totals.paid === null) {
+    parts.push("no price for this week's windows");
   } else {
-    parts.push("of ");
+    if (typeof totals.usedOfPaid === "number") {
+      parts.push(`${percentText(totals.usedOfPaid)} of `);
+    } else {
+      parts.push("of ");
+    }
+    parts.push(...paidAmount(totals, currency));
+    parts.push(" paid for this week");
   }
-  parts.push(...paidAmount(totals, currency));
-  parts.push(" paid for this week");
   if (totals.paidWithout.length > 0) {
     parts.push(
       h("span", {

@@ -1051,8 +1051,11 @@ bucket keeps its id as its name. The four ids were seen in a real payload of agy
 
 An open `agy` session keeps saying the numbers of its own last answer while another one works on, so a
 stored number is kept against an older one of the same email and plan: less use of the same window (the
-resets within the jitter), or a window that ends earlier with no more use or that had already ended.
-When Google takes use back inside a window, the card shows it once that window has ended. An unused
+resets within the jitter), no use while a used window still runs, or a window that ends earlier with no
+more use or that had already ended. This costs two things, because seatswap has agy's word alone and
+never asks Google: when Google takes use back inside a window, the number stays until that window has
+ended, and when Google resets a limit early, the new window shows at its first use and the history has
+no line for the one it cut short. An unused
 limit's `reset_time` moves with the clock, so while nothing is used a different reset is no change of
 the file.
 
@@ -1077,7 +1080,9 @@ last one signed in, so a week can read too low. `Show a Google card` only hides 
 A Google account is a provider subscription (`GO`, `#0d9488`), created at its first reading and edited
 like an account's; its plan comes from `agy`. One reading of the file is recorded once, at the time
 `agy` said it and as a status-line reading, so a drop in it is never an early reset: the session and the
-week as they were then, whatever has ended since. The Claude/GPT limits stay on the card. seatswap does
+week as they were then, whatever has ended since. A limit nobody has used is recorded without a reset:
+it has no window that could end unused, like a Claude limit without one. The Claude/GPT limits stay on
+the card. seatswap does
 not record the work `agy` does: what a Google week was worth is unknown with that reason, never 0, and a
 figure that sets recorded work against what was paid (the Subscriptions totals and total row, the
 This-week card's paid sum and its share) leaves Google out.
@@ -2017,8 +2022,8 @@ shows its hours, but its size against the reference says `not measured` and only
 shown.
 
 Above the cards stands one totals line. **All {n} subscriptions, a month** counts only subscriptions
-with a finished week (or Ollama month) in the range and says `No subscription has a finished week in
-this range yet.` when none has; then their monthly cost, their worth at API prices with `× paid`,
+with a finished week (or Ollama month) in the range, without Google's (§7.9), and says
+`No totals: {reason}.` when none counts; then their monthly cost, their worth at API prices with `× paid`,
 their tokens used a month and `from the last {w} weeks`. Each subscription counts with its average
 week over its own finished weeks in the range × 52 / 12; Ollama counts its average month. A monthly
 total with a missing part has no figure, never 0, and a sum over nothing has no figure either; the

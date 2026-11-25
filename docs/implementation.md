@@ -5289,7 +5289,7 @@ pub struct GoogleBucket { pub id: String, pub percent: Option<f64>,
 pub struct GoogleFeed { pub at: DateTime<Utc>, pub email: String, pub plan: Option<String>,
     pub buckets: Vec<GoogleBucket> }                       // <data>/google.json
 pub struct GoogleReading { pub reading: ProviderReading,
-    pub recorded: ProviderReading,   // Session and WeeklyAll as they were at `at`; no usage without either
+    pub recorded: ProviderReading,   // Session and WeeklyAll as they were at `at`, an unused one without its reset; no usage without either
     pub at: DateTime<Utc>, pub notes: Vec<String> }
 pub fn is_payload(raw: &Value) -> bool;
 pub fn feed_from_payload(raw: &Value, now: DateTime<Utc>) -> Option<GoogleFeed>;

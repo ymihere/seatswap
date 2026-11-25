@@ -236,7 +236,7 @@ function cardHead(title, sub) {
 // the totals line
 // ---------------------------------------------------------------------------
 
-function totalsCard(totals, currency, env) {
+function totalsCard(totals, missing, currency, env) {
   requireObject(totals, "totals");
   const count = requireWholeNumber(totals.count, "totals.count");
   const price = optionalNumber(totals.priceMonth, "totals.priceMonth");
@@ -248,12 +248,12 @@ function totalsCard(totals, currency, env) {
 
   const card = h("div", { class: "hcard stats-sub-totals" });
   // A sum over no counted subscription has no figure at all: the line says
-  // what is missing instead of writing 0 for each sum.
+  // why (`usageTotal.missing`) instead of writing 0 for each sum.
   if (count === 0) {
     card.appendChild(
       h("span", {
         class: "mf",
-        text: "No subscription has a finished week in this range yet.",
+        text: `No totals: ${missing}.`,
         title: TOTALS_COUNT,
       })
     );
@@ -665,13 +665,13 @@ function usageTotalNode(row, count, currency, env) {
   return line;
 }
 
-function usageCard(groups, total, totalCount, weeks, currency, env) {
+function usageCard(groups, total, totalMissing, totalCount, weeks, currency, env) {
   const list = requireArray(groups, "usage");
   const card = h("div", { class: "hcard stats-sub-usage" });
   card.appendChild(
     cardHead(
       "Am I using what I pay for?",
-      totalCount === 0 ? "no finished week in this range" : rangeWeeksText(weeks)
+      totalCount === 0 ? totalMissing : rangeWeeksText(weeks)
     )
   );
   const body = h("div", { class: "stats-sub-usage-body" });
@@ -1226,11 +1226,17 @@ export async function show(container, env) {
     typeof data.currency === "string" ? data.currency : env.currency;
 
   const root = h("div", { class: "g stats-subscriptions" });
-  root.appendChild(totalsCard(data.totals, currency, env));
   const totalCount = requireWholeNumber(data.totals.count, "totals.count");
+  requireObject(data.usageTotal, "usageTotal");
+  // A total over nothing always says why.
+  const totalMissing =
+    totalCount === 0
+      ? requireString(data.usageTotal.missing, "usageTotal.missing")
+      : null;
+  root.appendChild(totalsCard(data.totals, totalMissing, currency, env));
   const weeks = requireWholeNumber(data.totals.weeks, "totals.weeks");
   root.appendChild(plansCard(data.plans, data.sizes, env));
-  root.appendChild(usageCard(data.usage, data.usageTotal, totalCount, weeks, currency, env));
+  root.appendChild(usageCard(data.usage, data.usageTotal, totalMissing, totalCount, weeks, currency, env));
   root.appendChild(onePercentCard(data.perPercent, env));
   root.appendChild(tokensWeekCard(data.tokensWeek, data.plans, env));
   clear(container);

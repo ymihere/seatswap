@@ -88,7 +88,7 @@ pub enum StoreError {
     /// any kind can be read from it.
     #[error("{id}: the stored login is not a JSON object")]
     NotLogin { id: String },
-    #[error("{0} is not a provider account: its org is neither codex nor ollama")]
+    #[error("{0} is not a provider account: its org is not codex, ollama or google")]
     NotProvider(String),
     #[error("Claude Code's account identity (oauthAccount in {path}) is missing or incomplete")]
     MissingIdentity { path: PathBuf },
@@ -1374,7 +1374,7 @@ pub struct AccountsFile {
     pub version: u32,
     #[serde(default)]
     pub accounts: Vec<Account>,
-    /// The provider subscriptions, one per Codex or Ollama login (spec R4). An
+    /// The provider subscriptions, one per Codex, Ollama or Google login (spec R4). An
     /// older file without the key loads with an empty list, and 1.2 reads a
     /// file that has it because it has no `deny_unknown_fields`.
     #[serde(default)]

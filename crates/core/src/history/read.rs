@@ -100,7 +100,7 @@ pub struct Read<R> {
 
 impl HistoryDir {
     /// Every company's records of the range on the chosen hosts: Claude's
-    /// token records, window records and events beside Codex's and Ollama's.
+    /// token records, window records and events beside the other companies'.
     /// This never filters by company. A reader that serves Claude's accounts
     /// alone uses [`read_claude`](HistoryDir::read_claude).
     pub fn read<R: Record>(&self, range: &Range, hosts: &Hosts) -> Result<Read<R>, HistoryError> {
@@ -134,7 +134,7 @@ impl HistoryDir {
     }
 
     /// The Claude records of the range: [`read`](HistoryDir::read) with the
-    /// Codex and Ollama readings left out, warnings kept. Every reader that
+    /// other companies' readings left out, warnings kept. Every reader that
     /// serves Claude's accounts alone uses this; a reader that serves every
     /// company (the statistics' valuation, the charts that count provider
     /// work) uses `read`, which already returns every company's records.

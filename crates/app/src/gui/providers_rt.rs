@@ -1787,8 +1787,11 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let app = test_app(dir.path());
         let mut runtime = test_runtime(dir.path(), Api::default(), &dir.path().join("codex"));
-        for step in 0..12 {
-            let at = utc("2026-11-25T10:00:00Z") + chrono::Duration::minutes(5 * step);
+        let first = utc("2026-11-25T10:00:00Z");
+        // Every five minutes, and once more after `agy` was closed for longer
+        // than a week: the limit nobody used had no window that could end.
+        let rounds = (0..12).map(|step| first + chrono::Duration::minutes(5 * step));
+        for at in rounds.chain([first + chrono::Duration::days(15)]) {
             let text = |time: DateTime<Utc>| time.to_rfc3339();
             google_says(
                 &app,
