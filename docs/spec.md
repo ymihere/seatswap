@@ -1359,7 +1359,7 @@ The target is somewhere between the macOS Control Centre and Raycast: one floati
   - Colours follow §7.3, drawn as a soft gradient along the arc, with a faint glow on the red state.
   - Clicking the gauge of an account that is not in use switches to it, like its Switch button. The pointer becomes a hand over it.
 - **Account colour:** a 3 px accent bar on the card's left edge and the abbreviation badge.
-- **Order:** the active account at the bottom. Above it the other accounts stand by their weekly reset, the week that expires next on top; an account without a weekly reset follows them, and equal resets keep the list order. The provider cards keep their own section.
+- **Order:** every account, the active one too, stands by its weekly reset, the week that expires next on top; an account without a weekly reset follows them, and equal resets keep the list order. The provider cards keep their own section.
 - **Active account:** the card is raised (slightly lighter), with a subtle ring in the account colour and an "Active" pill.
 - **Card header:** the badge, the account's name, and after it, muted and small, the time left until the weekly reset in the status line's compact form (`3d 2h`, `14h 3min`, `35min`; tooltip "until the weekly reset"). A logged-out account and one without a weekly reset show none.
 - **Closing:** Esc, the × in the header, a click anywhere else (the pop-up loses focus), or a second left click on the tray icon. The pop-up must actually get the keyboard focus when it opens, or none of the first three work (on Cinnamon it did not at first, §17).

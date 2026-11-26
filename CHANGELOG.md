@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.6.1] - 2026-11-26
+
+### Changed
+
+- The pop-up orders every account by its weekly reset, the active one too: the week that expires
+  next stands on top. The active account no longer stays at the bottom.
+
 ## [1.6.0] - 2026-11-25
 
 ### Added
@@ -779,7 +786,9 @@ All notable changes to this project are documented here. The format follows
   starts later): it says so and shows the icon as soon as a tray appears; `seatswap panel` opens
   the pop-up meanwhile.
 
-[Unreleased]: https://github.com/ymihere/seatswap/compare/v1.5.5...HEAD
+[Unreleased]: https://github.com/ymihere/seatswap/compare/v1.6.1...HEAD
+[1.6.1]: https://github.com/ymihere/seatswap/compare/v1.6.0...v1.6.1
+[1.6.0]: https://github.com/ymihere/seatswap/compare/v1.5.5...v1.6.0
 [1.5.5]: https://github.com/ymihere/seatswap/compare/v1.5.4...v1.5.5
 [1.5.4]: https://github.com/ymihere/seatswap/compare/v1.5.3...v1.5.4
 [1.5.3]: https://github.com/ymihere/seatswap/compare/v1.5.2...v1.5.3

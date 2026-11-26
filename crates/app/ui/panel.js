@@ -120,19 +120,17 @@ function viewIsActive(view) {
   return isActiveView(view, state.snapshot);
 }
 
-// The active account is the bottom card. Above it the others stand by their
-// weekly reset, the one whose week expires next on top; an account without a
-// weekly reset follows them, and equal resets keep the list order.
+// Every account, the active one too, stands by its weekly reset: the one whose
+// week expires next on top. An account without a weekly reset follows them, and
+// equal resets keep the list order.
 function orderedViews(views) {
   const resetMs = (view) => {
     const week = findLimit(view, "weekly_all");
     const ms = week && week.resetsAt ? Date.parse(week.resetsAt) : NaN;
     return Number.isFinite(ms) ? ms : Infinity;
   };
-  return (Array.isArray(views) ? views.slice() : []).sort(
-    (a, b) =>
-      Number(viewIsActive(a)) - Number(viewIsActive(b)) ||
-      (resetMs(a) === resetMs(b) ? 0 : resetMs(a) < resetMs(b) ? -1 : 1)
+  return (Array.isArray(views) ? views.slice() : []).sort((a, b) =>
+    resetMs(a) === resetMs(b) ? 0 : resetMs(a) < resetMs(b) ? -1 : 1
   );
 }
 
